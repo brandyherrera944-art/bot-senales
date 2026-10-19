@@ -22,7 +22,8 @@ jobs:
       - run: pip install -r requirements.txt
       - name: Descargar 2 anos de EURUSD 5 min (Dukascopy)
         run: |
-          npx --yes dukascopy-node -i eurusd -from 2024-10-01 -to $(date -u -d yesterday +%F) -t m5 -f csv -dir datos
+          mkdir -p datos
+          python descargar_dukascopy.py 2024-10-01 $(date -u -d yesterday +%F)
           ls -la datos
           head -3 datos/*.csv
       - name: Probar estrategia SMC en Nueva York
