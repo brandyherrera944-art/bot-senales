@@ -39,6 +39,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add ultima_ejecucion.txt
           if [ -f resultados.csv ]; then git add resultados.csv; fi
+          if [ -f vigilancia.csv ]; then git add vigilancia.csv; fi
           git commit -m "Resultados $(date -u +%F_%H:%M)" || echo "sin cambios"
           git pull --rebase || true
           git push
