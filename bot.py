@@ -382,8 +382,54 @@ def mensaje_resumen():
     return "📋 <b>Resumen del día</b>\n" + "\n".join(partes) + resumen_vigilancia()
 
 
+def backtest_vig(df, expiraciones):
+    """Asertividad histórica de RSI2 por expiración (sin contar empates)."""
+    df = indicadores(df)
+    c = df["Close"]
+    lado = np.where((c > df["ema_l"]) & (df["tend_1h"] > 0) & (df["rsi2"] < 10), 1,
+                    np.where((c < df["ema_l"]) & (df["tend_1h"] < 0) & (df["rsi2"] > 90), -1, 0))
+    cv, out = c.values, {}
+    for e in expiraciones:
+        g = t = 0
+        ultimo = -10**9
+        for i in np.flatnonzero(lado):
+            if i + e >= len(df) or i - ultimo < e or i < EMA_LENTA + 10 or not en_horario(df.index[i]):
+                continue
+            ultimo = i
+            dif = (cv[i + e] - cv[i]) * lado[i]
+            if dif == 0:
+                continue
+            g += int(dif > 0)
+            t += 1
+        out[e] = (g, t)
+    return out
+
+
+def real_vig(par, e):
+    """Asertividad real acumulada en vigilancia: (ganadas, total) sin empates."""
+    if not os.path.exists(ARCHIVO_VIGILANCIA):
+        return 0, 0
+    v = pd.read_csv(ARCHIVO_VIGILANCIA)
+    v = v[(v["par"] == par) & (v["expiracion_min"] == e * MIN_VELA) & (v["resultado"] != "EMPATE")]
+    return int((v["resultado"] == "GANADA").sum()), len(v)
+
+
+def txt_pct(g, t):
+    return f"{g}/{t} ({100 * g / t:.0f}%)" if t else "aún sin datos"
+
+
+def nombre_par(par):
+    return f"{par[:3]}/{par[3:]}"
+
+
+TABLA_VIG = {}
+
+
 def calcular_tabla():
     datos = descargar(PARES, periodo="59d")
+    for p, df in datos.items():
+        if p in VIGILANCIA and len(df) > EMA_LENTA + 50:
+            TABLA_VIG[p] = backtest_vig(df, VIGILANCIA[p])
     return {p: backtest(df) for p, df in datos.items() if len(df) > EMA_LENTA + 50}
 
 
@@ -462,8 +508,9 @@ def main():
                     cierre = df["Close"].iat[k]
                     res = guardar_vigilancia(par, ve, vlado, vprecio, cierre, vts)
                     icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
-                    enviar(f"🔍 Vigilancia {icono} {res} — {par} {ve * MIN_VELA} min\n"
-                           f"Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}")
+                    enviar(f"🔍 {icono} <b>{res}</b> · {nombre_par(par)} · {ve * MIN_VELA} min\n"
+                           f"💵 Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}\n"
+                           f"📊 Asertividad real: {txt_pct(*real_vig(par, ve))}")
                     del vig_abiertas[(vp, ve)]
             if par in VIGILANCIA and (par, ts) not in vig_vistas and en_horario(ts):
                 vig_vistas.add((par, ts))
@@ -474,12 +521,19 @@ def main():
                     for e in libres:
                         vig_abiertas[(par, e)] = (ts, lado, precio)
                     hora_col = (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota")
-                    enviar(f"🔍 <b>VIGILANCIA {par}</b> — "
-                           f"{'CALL ⬆️ (sube)' if lado > 0 else 'PUT ⬇️ (baja)'}\n"
-                           f"Estrategia: RSI2 extremo · vela {hora_col:%H:%M} (hora Colombia)\n"
-                           f"Precio: {fmt(par, precio)} · expiraciones: "
-                           f"{', '.join(f'{e * MIN_VELA} min' for e in libres)}\n"
-                           f"⚠️ Solo observación: NO operar. Estamos midiendo si funciona.")
+                    linea = "━━━━━━━━━━━━━━"
+                    pcts = []
+                    for e in libres:
+                        hg, ht = TABLA_VIG.get(par, {}).get(e, (0, 0))
+                        pcts.append(f"• {e * MIN_VELA} min: histórico {txt_pct(hg, ht)}\n"
+                                    f"   real {txt_pct(*real_vig(par, e))}")
+                    enviar(f"{linea}\n🔍 <b>VIGILANCIA · {nombre_par(par)}</b>\n"
+                           f"{'🟢 CALL ⬆️ (sube)' if lado > 0 else '🔴 PUT ⬇️ (baja)'}\n"
+                           f"⏰ Entrada: {hora_col:%H:%M} (hora Colombia)\n"
+                           f"💵 Precio: {fmt(par, precio)}\n"
+                           f"🧠 Estrategia: RSI2 extremo\n{linea}\n"
+                           f"📊 <b>Asertividad</b>\n" + "\n".join(pcts) + "\n"
+                           f"{linea}\n⚠️ Solo observación: NO operar.")
 
             if (par, ts) in ya_vistas or not en_horario(ts):
                 continue
