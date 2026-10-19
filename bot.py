@@ -128,10 +128,9 @@ def tendencia_1h(df):
     e = ema(c1h, EMA_1H)
     signo = np.sign(c1h - e)
     signo.iloc[:EMA_1H] = 0          # sin datos suficientes en las primeras horas
-    t = pd.DataFrame({"t": signo.values}, index=c1h.index + pd.Timedelta(hours=1))
+    t = pd.DataFrame({"k": c1h.index + pd.Timedelta(hours=1), "t": signo.values}).sort_values("k")
     cierre5 = pd.DataFrame({"k": df.index + pd.Timedelta(minutes=MIN_VELA)})
-    m = pd.merge_asof(cierre5, t.reset_index().rename(columns={"index": "k"}).sort_values("k"),
-                      on="k", direction="backward")
+    m = pd.merge_asof(cierre5, t, on="k", direction="backward")
     return pd.Series(m["t"].fillna(0).values, index=df.index)
 
 
