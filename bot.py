@@ -31,6 +31,15 @@ ARCHIVO_RESULTADOS = os.getenv("ARCHIVO_RESULTADOS", "resultados.csv")
 FILTRO_1H = os.getenv("FILTRO_1H", "1") == "1"
 EMA_1H = 50
 
+# Modo vigilancia: estrategia RSI2 en pares/expiraciones candidatas.
+# Solo OBSERVA y mide resultados reales; no es una recomendación para operar.
+VIGILANCIA = {}
+for _x in os.getenv("VIGILANCIA", "USDCAD:3,USDCAD:6,GBPUSD:6").split(","):
+    if ":" in _x:
+        _p, _e = _x.strip().upper().split(":")
+        VIGILANCIA.setdefault(_p, []).append(int(_e))
+ARCHIVO_VIGILANCIA = "vigilancia.csv"
+
 # Parámetros de la estrategia
 EMA_RAPIDA, EMA_LENTA = 50, 200
 ADX_TENDENCIA, ADX_LATERAL = 22, 18
@@ -117,8 +126,21 @@ def indicadores(df: pd.DataFrame) -> pd.DataFrame:
     g = rma(delta.clip(lower=0), 14)
     p = rma((-delta).clip(lower=0), 14)
     df["rsi"] = 100 - 100 / (1 + g / p.replace(0, np.nan))
+    g2 = rma(delta.clip(lower=0), 2)
+    p2 = rma((-delta).clip(lower=0), 2)
+    df["rsi2"] = 100 - 100 / (1 + g2 / p2.replace(0, np.nan))
     df["tend_1h"] = tendencia_1h(df)
     return df
+
+
+def senal_rsi2(df, i):
+    """+1 CALL / -1 PUT / 0: RSI de 2 periodos extremo a favor de la tendencia."""
+    c, el, t1h, r2 = (df[k].iat[i] for k in ("Close", "ema_l", "tend_1h", "rsi2"))
+    if c > el and t1h > 0 and r2 < 10:
+        return 1
+    if c < el and t1h < 0 and r2 > 90:
+        return -1
+    return 0
 
 
 def tendencia_1h(df):
@@ -305,9 +327,39 @@ def guardar_resultado(par, s, cierre, gano, ts):
                 f"{'EMPATE' if gano is None else ('GANADA' if gano else 'PERDIDA')}\n")
 
 
+def guardar_vigilancia(par, exp, lado, precio, cierre, ts):
+    nuevo = not os.path.exists(ARCHIVO_VIGILANCIA)
+    dif = (cierre - precio) * lado
+    res = "EMPATE" if dif == 0 else ("GANADA" if dif > 0 else "PERDIDA")
+    with open(ARCHIVO_VIGILANCIA, "a", encoding="utf-8") as f:
+        if nuevo:
+            f.write("fecha_utc,par,expiracion_min,direccion,entrada,cierre,resultado\n")
+        f.write(f"{ts:%Y-%m-%d %H:%M},{par},{exp * MIN_VELA},{'CALL' if lado > 0 else 'PUT'},"
+                f"{precio},{cierre},{res}\n")
+    return res
+
+
+def resumen_vigilancia():
+    if not os.path.exists(ARCHIVO_VIGILANCIA):
+        return "\n\n🔍 <b>Vigilancia RSI2</b>: aún sin resultados."
+    v = pd.read_csv(ARCHIVO_VIGILANCIA)
+    v = v[v["resultado"] != "EMPATE"]
+    v["fecha_utc"] = pd.to_datetime(v["fecha_utc"], utc=True)
+    hoy = pd.Timestamp.now(tz="UTC").normalize()
+    lineas = ["\n\n🔍 <b>Vigilancia RSI2</b> (solo observación, meta ≥56 %):"]
+    for (par, e), x in v.groupby(["par", "expiracion_min"]):
+        g = (x["resultado"] == "GANADA").sum()
+        xh = x[x["fecha_utc"] >= hoy]
+        gh = (xh["resultado"] == "GANADA").sum()
+        lineas.append(f"{par} {e}m — hoy {gh}/{len(xh)} · total {g}/{len(x)} "
+                      f"({100 * g / len(x):.0f}%)")
+    return "\n".join(lineas)
+
+
 def mensaje_resumen():
     if not os.path.exists(ARCHIVO_RESULTADOS):
-        return "📋 <b>Resumen del día</b>\nHoy no hubo señales que pasaran el filtro."
+        return ("📋 <b>Resumen del día</b>\nHoy no hubo señales que pasaran el filtro."
+                + resumen_vigilancia())
     r = pd.read_csv(ARCHIVO_RESULTADOS)
     r = r[r["resultado"] != "EMPATE"]
     r["fecha_utc"] = pd.to_datetime(r["fecha_utc"], utc=True)
@@ -327,7 +379,7 @@ def mensaje_resumen():
         por_par = dia.groupby("par")["resultado"].apply(
             lambda v: f"{(v == 'GANADA').sum()}/{len(v)}")
         partes.append("\nPor par hoy: " + ", ".join(f"{k} {v}" for k, v in por_par.items()))
-    return "📋 <b>Resumen del día</b>\n" + "\n".join(partes)
+    return "📋 <b>Resumen del día</b>\n" + "\n".join(partes) + resumen_vigilancia()
 
 
 def calcular_tabla():
@@ -349,6 +401,8 @@ def main():
     enviadas = {}      # (par, ts_vela) -> dict con la señal para verificar
     ya_vistas = set()
     resumen_enviado = set()
+    vig_abiertas = {}   # (par, exp) -> (ts, lado, precio)
+    vig_vistas = set()
 
     while time.time() < fin:
         # Espera al cierre de la siguiente vela de 5 min (+25 s de margen)
@@ -398,6 +452,34 @@ def main():
                            f"Entrada {fmt(par, s['precio'])} → cierre {fmt(par, cierre)}")
                     guardar_resultado(par, s, cierre, gano, clave[1])
                     del enviadas[clave]
+
+            # ---- Modo vigilancia (RSI2): verificar resultados y buscar nuevas señales
+            for (vp, ve), (vts, vlado, vprecio) in list(vig_abiertas.items()):
+                if vp != par or vts not in df.index:
+                    continue
+                k = df.index.get_loc(vts) + ve
+                if k <= i:
+                    cierre = df["Close"].iat[k]
+                    res = guardar_vigilancia(par, ve, vlado, vprecio, cierre, vts)
+                    icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
+                    enviar(f"🔍 Vigilancia {icono} {res} — {par} {ve * MIN_VELA} min\n"
+                           f"Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}")
+                    del vig_abiertas[(vp, ve)]
+            if par in VIGILANCIA and (par, ts) not in vig_vistas and en_horario(ts):
+                vig_vistas.add((par, ts))
+                libres = [e for e in VIGILANCIA[par] if (par, e) not in vig_abiertas]
+                lado = senal_rsi2(df, i) if libres else 0
+                if lado:
+                    precio = df["Close"].iat[i]
+                    for e in libres:
+                        vig_abiertas[(par, e)] = (ts, lado, precio)
+                    hora_col = (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota")
+                    enviar(f"🔍 <b>VIGILANCIA {par}</b> — "
+                           f"{'CALL ⬆️ (sube)' if lado > 0 else 'PUT ⬇️ (baja)'}\n"
+                           f"Estrategia: RSI2 extremo · vela {hora_col:%H:%M} (hora Colombia)\n"
+                           f"Precio: {fmt(par, precio)} · expiraciones: "
+                           f"{', '.join(f'{e * MIN_VELA} min' for e in libres)}\n"
+                           f"⚠️ Solo observación: NO operar. Estamos midiendo si funciona.")
 
             if (par, ts) in ya_vistas or not en_horario(ts):
                 continue
