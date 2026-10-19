@@ -33,9 +33,9 @@ def decodificar(dia, contenido):
 def bajar_dia(dia):
     url = URL.format(y=dia.year, m=dia.month - 1, d=dia.day)   # Dukascopy cuenta meses desde 0
     estado = None
-    for intento in range(5):
+    for intento in range(3):
         try:
-            r = requests.get(url, timeout=30, headers={"User-Agent": "Mozilla/5.0"})
+            r = requests.get(url, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
             estado = r.status_code
             if r.status_code == 200:
                 return dia, decodificar(dia, r.content), 200
@@ -43,19 +43,28 @@ def bajar_dia(dia):
                 return dia, None, 404
         except Exception as e:  # noqa: BLE001
             estado = type(e).__name__
-        time.sleep(2 * (intento + 1))
+        time.sleep(1.5 * (intento + 1))
     return dia, None, estado
 
 
 def main():
     desde, hasta = pd.Timestamp(sys.argv[1]), pd.Timestamp(sys.argv[2])
     dias = [d for d in pd.date_range(desde, hasta, freq="D") if d.weekday() != 5]   # sábados sin mercado
+    prueba = URL.format(y=2025, m=2, d=4)
+    try:
+        r = requests.get(prueba, timeout=20, headers={"User-Agent": "Mozilla/5.0"})
+        print("Prueba de conexión:", r.status_code, len(r.content), "bytes",
+              r.headers.get("content-type"), "" if r.status_code == 200 else r.text[:300], flush=True)
+    except Exception as e:  # noqa: BLE001
+        print("Prueba de conexión falló:", repr(e), flush=True)
     partes, estados = [], {}
     with ThreadPoolExecutor(max_workers=8) as ex:
-        for dia, df, est in ex.map(bajar_dia, dias):
+        for n, (dia, df, est) in enumerate(ex.map(bajar_dia, dias), 1):
             estados[est] = estados.get(est, 0) + 1
             if df is not None and len(df):
                 partes.append(df)
+            if n % 50 == 0:
+                print(f"{n}/{len(dias)} días · respuestas {estados}", flush=True)
     print("Días pedidos:", len(dias), "· respuestas:", estados, "· días con datos:", len(partes))
     if not partes:
         raise SystemExit("No se pudo descargar ningún día de Dukascopy.")
