@@ -5,6 +5,9 @@ on:
     - cron: "0 */6 * * 1-5"
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 concurrency:
   group: bot-senales
   cancel-in-progress: false
@@ -28,3 +31,14 @@ jobs:
           EXPIRACION_VELAS: "3"
           DURACION_MINUTOS: "345"
         run: python bot.py
+      - name: Guardar resultados y mantener el bot activo
+        if: always()
+        run: |
+          date -u > ultima_ejecucion.txt
+          git config user.name "bot-senales"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ultima_ejecucion.txt
+          if [ -f resultados.csv ]; then git add resultados.csv; fi
+          git commit -m "Resultados $(date -u +%F_%H:%M)" || echo "sin cambios"
+          git pull --rebase || true
+          git push
