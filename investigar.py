@@ -111,7 +111,10 @@ def operaciones(df, lado, exp):
         if not bot.en_horario(idx[i]):
             continue
         ultimo = i
-        ops.append((idx[i], (c[i + exp] - c[i]) * lado[i] > 0))
+        dif = (c[i + exp] - c[i]) * lado[i]
+        if dif == 0:
+            continue          # empate: en binarias se devuelve el dinero
+        ops.append((idx[i], dif > 0))
     return ops
 
 
