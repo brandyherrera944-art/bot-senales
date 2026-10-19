@@ -1,6 +1,6 @@
 """
 Estrategia del video, SOLO en EUR/USD y SOLO en la mañana de Nueva York (entrada de 8:00 a 12:00 NY).
-Datos: ~2 años de velas de 5 min de EUR/USD del banco suizo Dukascopy (mercado real, no OTC).
+Datos: velas de 1 min de EUR/USD de HistData.com (mercado real, no OTC) pasadas a 5 min.
 
 Se prueban dos versiones (reglas fijadas antes de ver datos; versión bajista, la alcista es espejo):
 
@@ -195,7 +195,7 @@ def main():
 
     lineas = [
         "🔬 <b>Video SMC · EUR/USD · mañana de Nueva York</b>",
-        f"Datos reales Dukascopy: {df.index[0]:%Y-%m-%d} a {df.index[-1]:%Y-%m-%d} (~{meses:.0f} meses)",
+        f"Datos reales HistData: {df.index[0]:%Y-%m-%d} a {df.index[-1]:%Y-%m-%d} (~{meses:.0f} meses)",
         "Entrada solo de 8:00 a 12:00 hora NY (7-11 a. m. Colombia) · spread 1 pip.",
         "Gana dinero si R medio > 0 · binarias necesitan ~54 %.\n",
         "<b>COMPLETA 1h→15m→5m, TP en estructura</b>",
