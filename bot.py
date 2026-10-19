@@ -521,19 +521,20 @@ def main():
                     for e in libres:
                         vig_abiertas[(par, e)] = (ts, lado, precio)
                     hora_col = (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota")
-                    linea = "━━━━━━━━━━━━━━"
                     pcts = []
                     for e in libres:
                         hg, ht = TABLA_VIG.get(par, {}).get(e, (0, 0))
-                        pcts.append(f"• {e * MIN_VELA} min: histórico {txt_pct(hg, ht)}\n"
-                                    f"   real {txt_pct(*real_vig(par, e))}")
-                    enviar(f"{linea}\n🔍 <b>VIGILANCIA · {nombre_par(par)}</b>\n"
-                           f"{'🟢 CALL ⬆️ (sube)' if lado > 0 else '🔴 PUT ⬇️ (baja)'}\n"
-                           f"⏰ Entrada: {hora_col:%H:%M} (hora Colombia)\n"
-                           f"💵 Precio: {fmt(par, precio)}\n"
-                           f"🧠 Estrategia: RSI2 extremo\n{linea}\n"
-                           f"📊 <b>Asertividad</b>\n" + "\n".join(pcts) + "\n"
-                           f"{linea}\n⚠️ Solo observación: NO operar.")
+                        pcts.append(f"• {e * MIN_VELA} min: histórico {txt_pct(hg, ht)} · "
+                                    f"real {txt_pct(*real_vig(par, e))}")
+                    flecha = "🔺🔺" if lado > 0 else "🔻🔻"
+                    sentido = "arriba ⬆️" if lado > 0 else "abajo ⬇️"
+                    enviar(f"{flecha} <b>Par de divisas: {nombre_par(par)} - {sentido}</b>\n"
+                           f"Zona horaria UTC -5\n\n"
+                           f"⌛ EXPIRACIÓN: {' y '.join(str(e * MIN_VELA) for e in libres)} minutos\n"
+                           f"⏱️ ENTRADA: {hora_col:%H:%M}\n"
+                           f"💵 Precio: {fmt(par, precio)}\n\n"
+                           f"📊 <b>ASERTIVIDAD</b>\n" + "\n".join(pcts) + "\n\n"
+                           f"🔍 Modo vigilancia (RSI2): solo observar, NO operar.")
 
             if (par, ts) in ya_vistas or not en_horario(ts):
                 continue
