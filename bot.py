@@ -250,8 +250,10 @@ def backtest(df: pd.DataFrame) -> dict:
             continue
         ultimo = i
         k = "tendencia" if s["modo"].startswith("Tendencia") else "lateral"
-        gano = (c[i + EXPIRACION_VELAS] - c[i]) * s["lado"] > 0
-        res[k][0] += int(gano)
+        dif = (c[i + EXPIRACION_VELAS] - c[i]) * s["lado"]
+        if dif == 0:
+            continue          # empate: en binarias se devuelve el dinero
+        res[k][0] += int(dif > 0)
         res[k][1] += 1
     return {k: {"ganadas": g, "total": t, "winrate": (100 * g / t if t else 0.0)}
             for k, (g, t) in res.items()}
@@ -300,13 +302,14 @@ def guardar_resultado(par, s, cierre, gano, ts):
             f.write("fecha_utc,par,estrategia,direccion,entrada,cierre,resultado\n")
         d = "CALL" if s["lado"] > 0 else "PUT"
         f.write(f"{ts:%Y-%m-%d %H:%M},{par},{s['modo']},{d},{s['precio']},{cierre},"
-                f"{'GANADA' if gano else 'PERDIDA'}\n")
+                f"{'EMPATE' if gano is None else ('GANADA' if gano else 'PERDIDA')}\n")
 
 
 def mensaje_resumen():
     if not os.path.exists(ARCHIVO_RESULTADOS):
         return "📋 <b>Resumen del día</b>\nHoy no hubo señales que pasaran el filtro."
     r = pd.read_csv(ARCHIVO_RESULTADOS)
+    r = r[r["resultado"] != "EMPATE"]
     r["fecha_utc"] = pd.to_datetime(r["fecha_utc"], utc=True)
     hoy = pd.Timestamp.now(tz="UTC").normalize()
     lunes = hoy - pd.Timedelta(days=hoy.weekday())
@@ -388,8 +391,10 @@ def main():
                 k = df.index.get_loc(clave[1]) + EXPIRACION_VELAS
                 if k <= i:
                     cierre = df["Close"].iat[k]
-                    gano = (cierre - s["precio"]) * s["lado"] > 0
-                    enviar(f"{'✅ GANADA' if gano else '❌ PERDIDA'} — {par} {s['dir']}\n"
+                    dif = (cierre - s["precio"]) * s["lado"]
+                    gano = (dif > 0) if dif != 0 else None
+                    etiqueta = "➖ EMPATE" if gano is None else ("✅ GANADA" if gano else "❌ PERDIDA")
+                    enviar(f"{etiqueta} — {par} {s['dir']}\n"
                            f"Entrada {fmt(par, s['precio'])} → cierre {fmt(par, cierre)}")
                     guardar_resultado(par, s, cierre, gano, clave[1])
                     del enviadas[clave]
