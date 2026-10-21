@@ -72,6 +72,106 @@ def enviar(texto: str) -> None:
         log.warning("No se pudo enviar a Telegram: %s", e)
 
 
+def enviar_foto(png: bytes, texto: str) -> bool:
+    """Manda una imagen con su texto. Devuelve False si no se pudo."""
+    if not (TELEGRAM_TOKEN and TELEGRAM_CHAT_ID):
+        print("\n[MODO PRUEBA - sin Telegram, con gráfico]\n" + texto + "\n")
+        return True
+    try:
+        r = requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+            data={"chat_id": TELEGRAM_CHAT_ID, "caption": texto, "parse_mode": "HTML"},
+            files={"photo": ("grafico.png", png, "image/png")},
+            timeout=30)
+        if r.status_code == 200:
+            return True
+        log.warning("Telegram (foto) respondió %s: %s", r.status_code, r.text[:200])
+    except Exception as e:  # noqa: BLE001
+        log.warning("No se pudo enviar la foto a Telegram: %s", e)
+    return False
+
+
+def enviar_con_grafico(texto: str, df, **datos) -> None:
+    """Manda el mensaje con el gráfico de la operación. Si algo falla, manda solo el texto."""
+    png = None
+    if len(texto) <= 1024:                       # límite de Telegram para el texto de una foto
+        try:
+            png = grafico_vig(df, **datos)
+        except Exception as e:  # noqa: BLE001
+            log.warning("No se pudo dibujar el gráfico: %s", e)
+    if png is None or not enviar_foto(png, texto):
+        enviar(texto)
+
+
+# ------------------------------------------------------------ GRÁFICOS -----
+def grafico_vig(df, par, lado, ts, precio, minutos=None, k=None, cierre=None, res=None):
+    """Gráfico de una operación de vigilancia RSI2 (velas de 5 min).
+    Al abrir: velas, EMA200, RSI(2) y la entrada. Al cerrar: también el cierre y el resultado."""
+    import io
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Rectangle
+
+    verde, rojo, azul, gris = "#26a69a", "#ef5350", "#1e63d6", "#6b7280"
+    ie = df.index.get_loc(ts)
+    fin = min(len(df), (k if k is not None else ie) + 3)
+    ini = max(0, ie - 40)
+    v = df.iloc[ini:fin]
+    xs = np.arange(ini, fin) - ie                # 0 = vela de la entrada
+
+    fig, (ax, ar) = plt.subplots(2, 1, figsize=(10, 6.6), sharex=True,
+                                 gridspec_kw={"height_ratios": [3, 1.1]})
+    for x, o, h, l, c in zip(xs, v["Open"], v["High"], v["Low"], v["Close"]):
+        col = verde if c >= o else rojo
+        ax.vlines(x, l, h, color=col, linewidth=1)
+        ax.add_patch(Rectangle((x - 0.31, min(o, c)), 0.62, abs(c - o) or (h - l) * 0.02 or 1e-9,
+                               color=col, zorder=3))
+    ax.plot(xs, v["ema_l"], color="#f59e0b", lw=1.3, label=f"EMA{EMA_LENTA}")
+
+    # La entrada es al cierre de la vela 0 (borde derecho); el vencimiento, al cierre de la vela k.
+    ax.axvline(0.5, color=gris, lw=1, ls=":")
+    ax.axhline(precio, color=gris, lw=0.8, ls=":")
+    ax.plot(0.5, precio, "^" if lado > 0 else "v", ms=14, color=azul, mec="white", zorder=6,
+            label="Entrada")
+    sentido = "CALL (sube)" if lado > 0 else "PUT (baja)"
+    hora = (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota")
+    titulo = f"{nombre_par(par)} · RSI2 · {sentido} · entrada {hora:%Y-%m-%d %H:%M} hora Colombia"
+    color_titulo = "black"
+    if k is not None and cierre is not None:
+        col = {"GANADA": verde, "PERDIDA": rojo}.get(res, gris)
+        xk = k - ie + 0.5
+        ax.axvspan(0.5, xk, color=col, alpha=0.12, zorder=1)
+        ax.axvline(xk, color=col, lw=1.2, ls="--")
+        ax.plot(xk, cierre, "o", ms=10, color=col, mec="white", zorder=6, label="Cierre")
+        pips = (cierre - precio) * lado / (0.01 if par.endswith("JPY") else 0.0001)
+        titulo = (f"{nombre_par(par)} · RSI2 · {sentido} · {res} a {minutos} min ({pips:+.1f} pips)\n"
+                  f"entrada {hora:%Y-%m-%d %H:%M} hora Colombia")
+        color_titulo = col
+    ax.set_title(titulo, fontsize=11, fontweight="bold", color=color_titulo)
+    ax.legend(loc="upper left", fontsize=8)
+    ax.grid(alpha=0.25)
+    ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda y, _: fmt(par, y)))
+
+    ar.plot(xs, v["rsi2"], color="#7c3aed", lw=1.2)
+    ar.axhline(10, color=verde, lw=0.8, ls="--")
+    ar.axhline(90, color=rojo, lw=0.8, ls="--")
+    ar.plot(0, df["rsi2"].iat[ie], "o", ms=7, color=azul, zorder=5)
+    ar.set_ylim(-5, 105)
+    ar.set_ylabel("RSI(2)", fontsize=9)
+    ar.grid(alpha=0.25)
+    cada = 6
+    ar.set_xticks(xs[::cada])
+    ar.set_xticklabels([f"{t:%H:%M}" for t in v.index.tz_convert("America/Bogota")[::cada]], fontsize=8)
+
+    fig.tight_layout()
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=110)
+    plt.close(fig)
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------- DATOS ----
 def descargar(pares, periodo="5d") -> dict:
     """Descarga velas de 5 min de Yahoo Finance. Devuelve {par: DataFrame}."""
@@ -508,9 +608,12 @@ def main():
                     cierre = df["Close"].iat[k]
                     res = guardar_vigilancia(par, ve, vlado, vprecio, cierre, vts)
                     icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
-                    enviar(f"🔍 {icono} <b>{res}</b> · {nombre_par(par)} · {ve * MIN_VELA} min\n"
-                           f"💵 Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}\n"
-                           f"📊 Asertividad real: {txt_pct(*real_vig(par, ve))}")
+                    enviar_con_grafico(
+                        f"🔍 {icono} <b>{res}</b> · {nombre_par(par)} · {ve * MIN_VELA} min\n"
+                        f"💵 Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}\n"
+                        f"📊 Asertividad real: {txt_pct(*real_vig(par, ve))}",
+                        df, par=par, lado=vlado, ts=vts, precio=vprecio,
+                        minutos=ve * MIN_VELA, k=k, cierre=cierre, res=res)
                     del vig_abiertas[(vp, ve)]
             if par in VIGILANCIA and (par, ts) not in vig_vistas and en_horario(ts):
                 vig_vistas.add((par, ts))
@@ -528,13 +631,15 @@ def main():
                                     f"real {txt_pct(*real_vig(par, e))}")
                     flecha = "🔺🔺" if lado > 0 else "🔻🔻"
                     sentido = "arriba ⬆️" if lado > 0 else "abajo ⬇️"
-                    enviar(f"{flecha} <b>Par de divisas: {nombre_par(par)} - {sentido}</b>\n"
-                           f"Zona horaria UTC -5\n\n"
-                           f"⌛ EXPIRACIÓN: {' y '.join(str(e * MIN_VELA) for e in libres)} minutos\n"
-                           f"⏱️ ENTRADA: {hora_col:%H:%M}\n"
-                           f"💵 Precio: {fmt(par, precio)}\n\n"
-                           f"📊 <b>ASERTIVIDAD</b>\n" + "\n".join(pcts) + "\n\n"
-                           f"🔍 Modo vigilancia (RSI2): solo observar, NO operar.")
+                    enviar_con_grafico(
+                        f"{flecha} <b>Par de divisas: {nombre_par(par)} - {sentido}</b>\n"
+                        f"Zona horaria UTC -5\n\n"
+                        f"⌛ EXPIRACIÓN: {' y '.join(str(e * MIN_VELA) for e in libres)} minutos\n"
+                        f"⏱️ ENTRADA: {hora_col:%H:%M}\n"
+                        f"💵 Precio: {fmt(par, precio)}\n\n"
+                        f"📊 <b>ASERTIVIDAD</b>\n" + "\n".join(pcts) + "\n\n"
+                        f"🔍 Modo vigilancia (RSI2): solo observar, NO operar.",
+                        df, par=par, lado=lado, ts=ts, precio=precio)
 
             if (par, ts) in ya_vistas or not en_horario(ts):
                 continue
