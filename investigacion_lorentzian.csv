@@ -1,0 +1,85 @@
+par,variante,expiracion_min,ops_entreno,acierto_entreno,ops_prueba,acierto_prueba
+AUDUSD,A) RSI2 sola,15,3312,51.3,1533,50.6
+AUDUSD,A) RSI2 sola,30,2744,49.6,1279,51.5
+AUDUSD,A) RSI2 sola,60,2206,49.3,1030,49.9
+AUDUSD,B) Lorentzian solo,15,2384,48.7,1242,46.5
+AUDUSD,B) Lorentzian solo,30,2258,49.3,1168,48.4
+AUDUSD,B) Lorentzian solo,60,1959,49.7,1021,50.7
+AUDUSD,C) RSI2 + Lorentzian,15,1748,51.0,802,50.7
+AUDUSD,C) RSI2 + Lorentzian,30,1576,49.4,737,51.8
+AUDUSD,C) RSI2 + Lorentzian,60,1385,47.9,655,48.7
+AUDUSD,D) RSI2 + Lorentzian + kernel,15,606,50.3,294,53.7
+AUDUSD,D) RSI2 + Lorentzian + kernel,30,597,50.9,295,53.6
+AUDUSD,D) RSI2 + Lorentzian + kernel,60,597,48.6,295,51.2
+EURUSD,A) RSI2 sola,15,3230,50.1,1502,51.7
+EURUSD,A) RSI2 sola,30,2691,49.4,1256,49.9
+EURUSD,A) RSI2 sola,60,2192,48.1,1030,50.3
+EURUSD,B) Lorentzian solo,15,2543,48.1,1188,46.5
+EURUSD,B) Lorentzian solo,30,2389,48.8,1126,48.0
+EURUSD,B) Lorentzian solo,60,2018,49.9,979,49.6
+EURUSD,C) RSI2 + Lorentzian,15,1708,50.2,793,52.5
+EURUSD,C) RSI2 + Lorentzian,30,1538,49.2,720,51.8
+EURUSD,C) RSI2 + Lorentzian,60,1396,48.9,649,51.2
+EURUSD,D) RSI2 + Lorentzian + kernel,15,633,49.4,274,54.7
+EURUSD,D) RSI2 + Lorentzian + kernel,30,625,46.2,271,52.8
+EURUSD,D) RSI2 + Lorentzian + kernel,60,621,48.6,265,51.7
+GBPUSD,A) RSI2 sola,15,3261,50.9,1475,50.2
+GBPUSD,A) RSI2 sola,30,2709,49.5,1248,50.4
+GBPUSD,A) RSI2 sola,60,2165,47.5,1009,49.4
+GBPUSD,B) Lorentzian solo,15,2548,50.4,1269,47.5
+GBPUSD,B) Lorentzian solo,30,2392,51.0,1203,50.4
+GBPUSD,B) Lorentzian solo,60,2029,51.3,1028,49.6
+GBPUSD,C) RSI2 + Lorentzian,15,1660,50.3,791,49.7
+GBPUSD,C) RSI2 + Lorentzian,30,1525,49.0,722,50.4
+GBPUSD,C) RSI2 + Lorentzian,60,1354,47.6,649,51.3
+GBPUSD,D) RSI2 + Lorentzian + kernel,15,617,47.8,282,48.2
+GBPUSD,D) RSI2 + Lorentzian + kernel,30,616,47.2,278,48.6
+GBPUSD,D) RSI2 + Lorentzian + kernel,60,608,45.6,275,48.7
+NZDUSD,A) RSI2 sola,15,3303,51.3,1569,50.8
+NZDUSD,A) RSI2 sola,30,2722,51.3,1310,50.5
+NZDUSD,A) RSI2 sola,60,2195,48.8,1079,50.8
+NZDUSD,B) Lorentzian solo,15,2353,50.4,1217,47.1
+NZDUSD,B) Lorentzian solo,30,2248,51.7,1147,46.7
+NZDUSD,B) Lorentzian solo,60,1926,49.4,983,49.6
+NZDUSD,C) RSI2 + Lorentzian,15,1673,50.3,782,48.8
+NZDUSD,C) RSI2 + Lorentzian,30,1517,50.2,715,49.8
+NZDUSD,C) RSI2 + Lorentzian,60,1362,49.2,661,49.9
+NZDUSD,D) RSI2 + Lorentzian + kernel,15,583,46.8,271,50.2
+NZDUSD,D) RSI2 + Lorentzian + kernel,30,576,49.8,269,52.0
+NZDUSD,D) RSI2 + Lorentzian + kernel,60,573,49.0,272,46.7
+USDCAD,A) RSI2 sola,15,3184,50.0,1509,50.9
+USDCAD,A) RSI2 sola,30,2666,51.2,1266,50.9
+USDCAD,A) RSI2 sola,60,2162,50.0,1030,50.9
+USDCAD,B) Lorentzian solo,15,2650,48.6,1311,49.0
+USDCAD,B) Lorentzian solo,30,2487,48.6,1240,49.9
+USDCAD,B) Lorentzian solo,60,2103,49.7,1054,51.7
+USDCAD,C) RSI2 + Lorentzian,15,1637,48.7,698,50.0
+USDCAD,C) RSI2 + Lorentzian,30,1522,50.7,659,50.4
+USDCAD,C) RSI2 + Lorentzian,60,1378,49.1,586,51.5
+USDCAD,D) RSI2 + Lorentzian + kernel,15,637,49.1,260,53.1
+USDCAD,D) RSI2 + Lorentzian + kernel,30,636,48.9,260,53.8
+USDCAD,D) RSI2 + Lorentzian + kernel,60,624,49.4,260,51.2
+USDCHF,A) RSI2 sola,15,3096,51.7,1561,51.7
+USDCHF,A) RSI2 sola,30,2591,50.9,1308,51.6
+USDCHF,A) RSI2 sola,60,2139,50.9,1071,51.1
+USDCHF,B) Lorentzian solo,15,2556,49.1,1162,51.0
+USDCHF,B) Lorentzian solo,30,2393,48.6,1093,50.8
+USDCHF,B) Lorentzian solo,60,2039,48.1,927,49.4
+USDCHF,C) RSI2 + Lorentzian,15,1621,51.1,825,53.3
+USDCHF,C) RSI2 + Lorentzian,30,1479,50.5,753,52.5
+USDCHF,C) RSI2 + Lorentzian,60,1338,49.9,658,50.2
+USDCHF,D) RSI2 + Lorentzian + kernel,15,610,51.0,315,54.0
+USDCHF,D) RSI2 + Lorentzian + kernel,30,606,49.5,309,51.1
+USDCHF,D) RSI2 + Lorentzian + kernel,60,595,50.3,299,51.5
+USDJPY,A) RSI2 sola,15,3339,51.8,1633,53.0
+USDJPY,A) RSI2 sola,30,2759,51.0,1378,53.6
+USDJPY,A) RSI2 sola,60,2239,51.9,1109,54.1
+USDJPY,B) Lorentzian solo,15,2238,47.3,1142,50.7
+USDJPY,B) Lorentzian solo,30,2130,50.0,1097,47.7
+USDJPY,B) Lorentzian solo,60,1852,50.4,948,48.1
+USDJPY,C) RSI2 + Lorentzian,15,1789,51.7,856,52.7
+USDJPY,C) RSI2 + Lorentzian,30,1621,51.8,788,52.9
+USDJPY,C) RSI2 + Lorentzian,60,1429,51.4,685,54.2
+USDJPY,D) RSI2 + Lorentzian + kernel,15,610,53.0,279,53.8
+USDJPY,D) RSI2 + Lorentzian + kernel,30,608,54.3,281,53.0
+USDJPY,D) RSI2 + Lorentzian + kernel,60,598,53.8,276,54.7
