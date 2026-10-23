@@ -377,7 +377,93 @@ def main():
     texto = "\n".join(lineas)
     bot.enviar(texto[:4000])
     print(texto)
+    texto2 = analisis_meses(ops)
+    bot.enviar(texto2[:4000])
+    print(texto2)
     return 0
+
+
+# --------------------------------------------------------- MES POR MES -----
+MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+MIN_OPS_VENTANA = 30
+
+
+def nombre_mes(m):
+    return f"{MESES[m.month - 1]} {str(m.year)[2:]}"
+
+
+def combo_txt(c):
+    par, v, e = c
+    return f"{bot.nombre_par(par)} {VARIANTES[v].split(')')[0]}) {e} min"
+
+
+def analisis_meses(ops):
+    """Resultados mes por mes y la prueba justa de 'elegir con 2 meses': ¿se repite el mes siguiente?"""
+    ops = ops.copy()
+    ops["mes"] = ops["fecha"].dt.tz_localize(None).dt.to_period("M")
+    cuenta = ops.groupby("mes").size()
+    meses = [m for m in sorted(cuenta.index) if cuenta[m] >= 0.3 * cuenta.median()]   # sin meses cortados
+    ops = ops[ops["mes"].isin(meses)]
+    lineas = ["📅 <b>RSI2 + Lorentzian · mes por mes y prueba de 2 meses</b>",
+              f"{len(meses)} meses completos ({nombre_mes(meses[0])} a {nombre_mes(meses[-1])}), "
+              f"{ops['par'].nunique()} pares juntos.",
+              "\n<b>Acierto de los últimos 6 meses</b> (15 min · meses sobre 54 % de todos)"]
+    for v, nombre in VARIANTES.items():
+        x = ops[(ops["variante"] == v) & (ops["exp"] == 15)]
+        t = x.groupby("mes")["gano"].mean() * 100
+        arriba = int((t > EQUILIBRIO).sum())
+        ult = " · ".join(f"{nombre_mes(m)} {t[m]:.0f}" for m in meses[-6:] if m in t.index)
+        lineas.append(f"• {nombre.split(')')[0]}) {ult} · <b>{arriba} de {len(t)}</b>")
+
+    g = ops.groupby(["par", "variante", "exp", "mes"])["gano"].agg(["sum", "count"])
+    combos = g.index.droplevel("mes").unique()
+    elegidas = []                               # (mes, combo, % 2 meses, % mes siguiente, ops sig.)
+    top5_v, top5_s = [0, 0], [0, 0]
+    for k in range(2, len(meses)):
+        ventana, sig = meses[k - 2:k], meses[k]
+        w = g[g.index.get_level_values("mes").isin(ventana)].groupby(level=[0, 1, 2]).sum()
+        w = w[w["count"] >= MIN_OPS_VENTANA]
+        if w.empty:
+            continue
+        w = w.assign(p=w["sum"] / w["count"]).sort_values("p", ascending=False)
+        for n, (combo, fila) in enumerate(w.head(5).iterrows()):
+            if (*combo, sig) not in g.index:
+                continue
+            s = g.loc[(*combo, sig)]
+            top5_v[0] += fila["sum"]
+            top5_v[1] += fila["count"]
+            top5_s[0] += s["sum"]
+            top5_s[1] += s["count"]
+            if n == 0:
+                elegidas.append((sig, combo, 100 * fila["p"], 100 * s["sum"] / s["count"], int(s["count"])))
+    if elegidas:
+        pv = np.mean([e[2] for e in elegidas])
+        ps = 100 * sum(e[3] * e[4] for e in elegidas) / 100 / sum(e[4] for e in elegidas)
+        sigue = sum(e[3] > EQUILIBRIO for e in elegidas)
+        lineas += [
+            "\n<b>Elegir la mejor con 2 meses y usarla el mes siguiente</b>",
+            f"En {len(elegidas)} meses, la elegida promediaba <b>{pv:.1f}%</b> en sus 2 meses "
+            f"y al mes siguiente dio <b>{ps:.1f}%</b> ({sum(e[4] for e in elegidas)} ops).",
+            f"Siguió sobre 54 % el mes siguiente en {sigue} de {len(elegidas)} meses.",
+            f"Con las 5 mejores de cada vez: {100 * top5_v[0] / top5_v[1]:.1f}% en sus 2 meses → "
+            f"{100 * top5_s[0] / max(top5_s[1], 1):.1f}% al mes siguiente.",
+            "Últimos 6 meses (elegida → cómo le fue):"]
+        for sig, combo, p2, p1, n1 in elegidas[-6:]:
+            lineas.append(f"• {nombre_mes(sig)}: {combo_txt(combo)} · {p2:.0f}% antes → "
+                          f"<b>{p1:.0f}%</b> ({n1} ops)")
+
+    ult = g[g.index.get_level_values("mes").isin(meses[-2:])].groupby(level=[0, 1, 2]).sum()
+    ult = ult[ult["count"] >= MIN_OPS_VENTANA]
+    ult = ult.assign(p=100 * ult["sum"] / ult["count"]).sort_values("p", ascending=False)
+    lineas.append(f"\n<b>Las 5 mejores de los últimos 2 meses</b> ({nombre_mes(meses[-2])} y "
+                  f"{nombre_mes(meses[-1])}, sin comprobar todavía):")
+    for combo, fila in ult.head(5).iterrows():
+        margen = 196 * np.sqrt(fila["p"] / 100 * (1 - fila["p"] / 100) / fila["count"])
+        lineas.append(f"• {combo_txt(combo)}: {fila['p']:.1f}% de {int(fila['count'])} (±{margen:.0f})")
+    lineas.append(f"De {len(ult)} combinaciones, {int((ult['p'] > EQUILIBRIO).sum())} pasan de 54 % "
+                  "en esos 2 meses. Con azar puro se espera que pasen unas cuantas.")
+    lineas.append("Análisis educativo, no es asesoría financiera.")
+    return "\n".join(lineas)
 
 
 if __name__ == "__main__":
