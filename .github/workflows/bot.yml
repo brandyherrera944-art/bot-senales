@@ -40,6 +40,7 @@ jobs:
           git add ultima_ejecucion.txt
           if [ -f resultados.csv ]; then git add resultados.csv; fi
           if [ -f vigilancia.csv ]; then git add vigilancia.csv; fi
+          if [ -f vigilancia_lz.csv ]; then git add vigilancia_lz.csv; fi
           git commit -m "Resultados $(date -u +%F_%H:%M)" || echo "sin cambios"
           git pull --rebase || true
           git push
