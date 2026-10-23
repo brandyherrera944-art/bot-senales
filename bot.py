@@ -40,6 +40,17 @@ for _x in os.getenv("VIGILANCIA", "USDCAD:3,USDCAD:6,GBPUSD:6").split(","):
         VIGILANCIA.setdefault(_p, []).append(int(_e))
 ARCHIVO_VIGILANCIA = "vigilancia.csv"
 
+# Vigilancia "D": RSI2 + Lorentzian Classification + kernel (15 min, todos los pares).
+# Solo OBSERVA: en la prueba de 3 años dio 50,6 % (ago-sep 2026: 56-58 %), no está aprobada.
+VIG_LZ = os.getenv("VIGILANCIA_LZ", "1") == "1"
+LZ_EXP_VELAS = 3                       # 3 velas de 5 min = 15 min
+ARCHIVO_VIG_LZ = "vigilancia_lz.csv"
+try:
+    import lorentzian as lz
+except Exception as _e:  # noqa: BLE001
+    lz = None
+    logging.getLogger("bot").warning("Sin Lorentzian (%s): la vigilancia D queda apagada.", _e)
+
 # Parámetros de la estrategia
 EMA_RAPIDA, EMA_LENTA = 50, 200
 ADX_TENDENCIA, ADX_LATERAL = 22, 18
@@ -104,7 +115,8 @@ def enviar_con_grafico(texto: str, df, **datos) -> None:
 
 
 # ------------------------------------------------------------ GRÁFICOS -----
-def grafico_vig(df, par, lado, ts, precio, minutos=None, k=None, cierre=None, res=None):
+def grafico_vig(df, par, lado, ts, precio, minutos=None, k=None, cierre=None, res=None,
+                estrategia="RSI2"):
     """Gráfico de una operación de vigilancia RSI2 (velas de 5 min).
     Al abrir: velas, EMA200, RSI(2) y la entrada. Al cerrar: también el cierre y el resultado."""
     import io
@@ -137,7 +149,7 @@ def grafico_vig(df, par, lado, ts, precio, minutos=None, k=None, cierre=None, re
             label="Entrada")
     sentido = "CALL (sube)" if lado > 0 else "PUT (baja)"
     hora = (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota")
-    titulo = f"{nombre_par(par)} · RSI2 · {sentido} · entrada {hora:%Y-%m-%d %H:%M} hora Colombia"
+    titulo = f"{nombre_par(par)} · {estrategia} · {sentido} · entrada {hora:%Y-%m-%d %H:%M} hora Colombia"
     color_titulo = "black"
     if k is not None and cierre is not None:
         col = {"GANADA": verde, "PERDIDA": rojo}.get(res, gris)
@@ -146,7 +158,7 @@ def grafico_vig(df, par, lado, ts, precio, minutos=None, k=None, cierre=None, re
         ax.axvline(xk, color=col, lw=1.2, ls="--")
         ax.plot(xk, cierre, "o", ms=10, color=col, mec="white", zorder=6, label="Cierre")
         pips = (cierre - precio) * lado / (0.01 if par.endswith("JPY") else 0.0001)
-        titulo = (f"{nombre_par(par)} · RSI2 · {sentido} · {res} a {minutos} min ({pips:+.1f} pips)\n"
+        titulo = (f"{nombre_par(par)} · {estrategia} · {sentido} · {res} a {minutos} min ({pips:+.1f} pips)\n"
                   f"entrada {hora:%Y-%m-%d %H:%M} hora Colombia")
         color_titulo = col
     ax.set_title(titulo, fontsize=11, fontweight="bold", color=color_titulo)
@@ -456,10 +468,103 @@ def resumen_vigilancia():
     return "\n".join(lineas)
 
 
+# ------------------------------------------- VIGILANCIA D (RSI2 + LORENTZIAN)
+def guardar_vig_lz(par, lado, precio, cierre, ts):
+    nuevo = not os.path.exists(ARCHIVO_VIG_LZ)
+    dif = (cierre - precio) * lado
+    res = "EMPATE" if dif == 0 else ("GANADA" if dif > 0 else "PERDIDA")
+    with open(ARCHIVO_VIG_LZ, "a", encoding="utf-8") as f:
+        if nuevo:
+            f.write("fecha_utc,par,expiracion_min,direccion,entrada,cierre,resultado\n")
+        f.write(f"{ts:%Y-%m-%d %H:%M},{par},{LZ_EXP_VELAS * MIN_VELA},{'CALL' if lado > 0 else 'PUT'},"
+                f"{precio},{cierre},{res}\n")
+    return res
+
+
+def real_vig_lz(par=None):
+    """Asertividad real acumulada de la vigilancia D: (ganadas, total) sin empates."""
+    if not os.path.exists(ARCHIVO_VIG_LZ):
+        return 0, 0
+    v = pd.read_csv(ARCHIVO_VIG_LZ)
+    v = v[v["resultado"] != "EMPATE"]
+    if par:
+        v = v[v["par"] == par]
+    return int((v["resultado"] == "GANADA").sum()), len(v)
+
+
+def resumen_vig_lz():
+    if not VIG_LZ:
+        return ""
+    if not os.path.exists(ARCHIVO_VIG_LZ):
+        return "\n\n🧠 <b>Vigilancia RSI2 + Lorentzian</b>: aún sin resultados."
+    v = pd.read_csv(ARCHIVO_VIG_LZ)
+    v = v[v["resultado"] != "EMPATE"]
+    v["fecha_utc"] = pd.to_datetime(v["fecha_utc"], utc=True)
+    hoy = pd.Timestamp.now(tz="UTC").normalize()
+    xh = v[v["fecha_utc"] >= hoy]
+    g, gh = (v["resultado"] == "GANADA").sum(), (xh["resultado"] == "GANADA").sum()
+    lineas = ["\n\n🧠 <b>Vigilancia RSI2 + Lorentzian</b> (15 min, solo observación, meta ≥56 %):",
+              f"Todos los pares — hoy {txt_pct(gh, len(xh))} · total {txt_pct(g, len(v))}"]
+    for par, x in v.groupby("par"):
+        lineas.append(f"{nombre_par(par)}: {txt_pct((x['resultado'] == 'GANADA').sum(), len(x))}")
+    return "\n".join(lineas)
+
+
+def vigilar_lz(par, df, i, ts, abiertas, vistas):
+    """Revisa el resultado de la operación abierta del par y busca una nueva señal D."""
+    if par in abiertas:
+        vts, vlado, vprecio = abiertas[par]
+        if vts not in df.index:
+            del abiertas[par]
+        else:
+            k = df.index.get_loc(vts) + LZ_EXP_VELAS
+            if k <= i:
+                cierre = df["Close"].iat[k]
+                res = guardar_vig_lz(par, vlado, vprecio, cierre, vts)
+                icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
+                enviar_con_grafico(
+                    f"🧠 {icono} <b>{res}</b> · RSI2 + Lorentzian · {nombre_par(par)} · "
+                    f"{LZ_EXP_VELAS * MIN_VELA} min\n"
+                    f"💵 Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}\n"
+                    f"📊 Asertividad real: {txt_pct(*real_vig_lz())} (todos los pares)",
+                    df, par=par, lado=vlado, ts=vts, precio=vprecio, minutos=LZ_EXP_VELAS * MIN_VELA,
+                    k=k, cierre=cierre, res=res, estrategia="RSI2 + Lorentzian")
+                del abiertas[par]
+    if par in abiertas or (par, ts) in vistas or not en_horario(ts) or lz is None:
+        return
+    vistas.add((par, ts))
+    lado = senal_rsi2(df, i)
+    if not lado:
+        return
+    crudo = df[["Open", "High", "Low", "Close"]]
+    hist = DATOS_59D.get(par)
+    if hist is not None and len(hist):
+        crudo = pd.concat([hist.loc[hist.index < crudo.index[0], ["Open", "High", "Low", "Close"]], crudo])
+    est = lz.estado_actual(crudo)
+    if est is None or est["sig"] != lado or not (est["sube"] if lado > 0 else est["baja"]):
+        return
+    precio = df["Close"].iat[i]
+    abiertas[par] = (ts, lado, precio)
+    hora_col = (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota")
+    sentido = "arriba ⬆️" if lado > 0 else "abajo ⬇️"
+    enviar_con_grafico(
+        f"🧠 <b>RSI2 + Lorentzian · {nombre_par(par)} - {sentido}</b>\n"
+        f"Zona horaria UTC -5\n\n"
+        f"⌛ EXPIRACIÓN: {LZ_EXP_VELAS * MIN_VELA} minutos\n"
+        f"⏱️ ENTRADA: {hora_col:%H:%M}\n"
+        f"💵 Precio: {fmt(par, precio)}\n\n"
+        f"📊 <b>ASERTIVIDAD</b>\n"
+        f"• Prueba 3 años (7 pares): 50,6 % · ago-sep 2026: 56-58 %\n"
+        f"• Real: {txt_pct(*real_vig_lz(par))} en {nombre_par(par)} · "
+        f"{txt_pct(*real_vig_lz())} en total\n\n"
+        f"🔍 Vigilancia RSI2 + Lorentzian + kernel: solo observar, NO operar.",
+        df, par=par, lado=lado, ts=ts, precio=precio, estrategia="RSI2 + Lorentzian")
+
+
 def mensaje_resumen():
     if not os.path.exists(ARCHIVO_RESULTADOS):
         return ("📋 <b>Resumen del día</b>\nHoy no hubo señales que pasaran el filtro."
-                + resumen_vigilancia())
+                + resumen_vigilancia() + resumen_vig_lz())
     r = pd.read_csv(ARCHIVO_RESULTADOS)
     r = r[r["resultado"] != "EMPATE"]
     r["fecha_utc"] = pd.to_datetime(r["fecha_utc"], utc=True)
@@ -479,7 +584,7 @@ def mensaje_resumen():
         por_par = dia.groupby("par")["resultado"].apply(
             lambda v: f"{(v == 'GANADA').sum()}/{len(v)}")
         partes.append("\nPor par hoy: " + ", ".join(f"{k} {v}" for k, v in por_par.items()))
-    return "📋 <b>Resumen del día</b>\n" + "\n".join(partes) + resumen_vigilancia()
+    return "📋 <b>Resumen del día</b>\n" + "\n".join(partes) + resumen_vigilancia() + resumen_vig_lz()
 
 
 def backtest_vig(df, expiraciones):
@@ -523,10 +628,12 @@ def nombre_par(par):
 
 
 TABLA_VIG = {}
+DATOS_59D = {}          # historial de 59 días por par (lo necesita el Lorentzian), se renueva cada hora
 
 
 def calcular_tabla():
     datos = descargar(PARES, periodo="59d")
+    DATOS_59D.update(datos)
     for p, df in datos.items():
         if p in VIGILANCIA and len(df) > EMA_LENTA + 50:
             TABLA_VIG[p] = backtest_vig(df, VIGILANCIA[p])
@@ -549,6 +656,8 @@ def main():
     resumen_enviado = set()
     vig_abiertas = {}   # (par, exp) -> (ts, lado, precio)
     vig_vistas = set()
+    lz_abiertas = {}    # par -> (ts, lado, precio) de la vigilancia D
+    lz_vistas = set()
 
     while time.time() < fin:
         # Espera al cierre de la siguiente vela de 5 min (+25 s de margen)
@@ -640,6 +749,13 @@ def main():
                         f"📊 <b>ASERTIVIDAD</b>\n" + "\n".join(pcts) + "\n\n"
                         f"🔍 Modo vigilancia (RSI2): solo observar, NO operar.",
                         df, par=par, lado=lado, ts=ts, precio=precio)
+
+            # ---- Vigilancia D: RSI2 + Lorentzian + kernel (todos los pares, 15 min)
+            if VIG_LZ:
+                try:
+                    vigilar_lz(par, df, i, ts, lz_abiertas, lz_vistas)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Vigilancia Lorentzian %s: %s", par, e)
 
             if (par, ts) in ya_vistas or not en_horario(ts):
                 continue
