@@ -1,0 +1,36 @@
+par,variante,ops_entreno,r_op_entreno,ops_prueba,r_op_prueba,ganadas_prueba
+AUDUSD,0) Azar (control),139,-0.149,58,-0.162,34.5
+AUDUSD,1) Cruce EMA 9/21 + EMA 200,176,-0.042,76,-0.053,38.2
+AUDUSD,2) Cruce EMAs + volatilidad,122,-0.084,52,-0.103,36.5
+AUDUSD,3) RSI2 + EMA 200,398,-0.117,184,-0.062,37.5
+AUDUSD,4) RSI2 + volatilidad,282,-0.08,135,-0.131,34.8
+EURUSD,0) Azar (control),141,-0.126,66,-0.242,31.8
+EURUSD,1) Cruce EMA 9/21 + EMA 200,198,-0.016,90,-0.161,33.3
+EURUSD,2) Cruce EMAs + volatilidad,118,-0.029,64,-0.127,34.4
+EURUSD,3) RSI2 + EMA 200,442,-0.12,187,-0.16,34.8
+EURUSD,4) RSI2 + volatilidad,313,-0.141,129,-0.119,36.4
+GBPUSD,0) Azar (control),155,-0.078,82,0.098,43.9
+GBPUSD,1) Cruce EMA 9/21 + EMA 200,202,-0.087,96,-0.192,33.3
+GBPUSD,2) Cruce EMAs + volatilidad,121,-0.158,65,-0.156,33.8
+GBPUSD,3) RSI2 + EMA 200,418,-0.096,212,-0.078,36.8
+GBPUSD,4) RSI2 + volatilidad,303,-0.108,150,-0.092,36.7
+NZDUSD,0) Azar (control),124,-0.294,58,-0.26,31.0
+NZDUSD,1) Cruce EMA 9/21 + EMA 200,152,-0.088,78,-0.314,28.2
+NZDUSD,2) Cruce EMAs + volatilidad,105,-0.195,48,-0.235,31.2
+NZDUSD,3) RSI2 + EMA 200,380,-0.172,193,-0.033,39.9
+NZDUSD,4) RSI2 + volatilidad,304,-0.114,149,-0.098,36.2
+USDCAD,0) Azar (control),129,-0.259,66,-0.144,33.3
+USDCAD,1) Cruce EMA 9/21 + EMA 200,207,-0.185,75,-0.067,37.3
+USDCAD,2) Cruce EMAs + volatilidad,121,-0.208,51,-0.069,37.3
+USDCAD,3) RSI2 + EMA 200,426,-0.136,206,0.05,42.2
+USDCAD,4) RSI2 + volatilidad,292,-0.082,162,0.111,44.4
+USDCHF,0) Azar (control),164,-0.18,78,-0.09,37.2
+USDCHF,1) Cruce EMA 9/21 + EMA 200,208,-0.24,92,-0.374,25.0
+USDCHF,2) Cruce EMAs + volatilidad,135,-0.29,60,-0.332,26.7
+USDCHF,3) RSI2 + EMA 200,433,-0.244,203,-0.176,33.0
+USDCHF,4) RSI2 + volatilidad,313,-0.264,149,-0.153,34.2
+USDJPY,0) Azar (control),114,-0.195,59,-0.26,30.5
+USDJPY,1) Cruce EMA 9/21 + EMA 200,153,-0.002,69,-0.325,27.5
+USDJPY,2) Cruce EMAs + volatilidad,105,-0.055,51,-0.332,27.5
+USDJPY,3) RSI2 + EMA 200,396,-0.084,183,-0.003,40.4
+USDJPY,4) RSI2 + volatilidad,276,-0.096,126,-0.167,34.1
