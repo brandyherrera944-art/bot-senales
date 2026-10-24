@@ -1,0 +1,33 @@
+name: Probar modelo AMD (3 anos)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  investigar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: Descargar 7 pares (HistData) y probar el modelo AMD
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python investigar_amd.py
+      - name: Guardar resultados
+        if: always()
+        run: |
+          git config user.name "bot-senales"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ -f operaciones_amd.csv ]; then git add operaciones_amd.csv; fi
+          git commit -m "Investigacion AMD $(date -u +%F_%H:%M)" || echo "sin cambios"
+          git pull --rebase || true
+          git push
