@@ -45,6 +45,16 @@ ARCHIVO_VIGILANCIA = "vigilancia.csv"
 VIG_LZ = os.getenv("VIGILANCIA_LZ", "1") == "1"
 LZ_EXP_VELAS = 3                       # 3 velas de 5 min = 15 min
 ARCHIVO_VIG_LZ = "vigilancia_lz.csv"
+# Filtro de horario (hora Colombia/Perú, UTC-5) para las dos vigilancias.
+# Solo se AVISAN por Telegram las señales cuya ENTRADA cae en estas horas (2 = de 2:00 a 2:59).
+# Las de otras horas se siguen midiendo EN SILENCIO (se guardan en el CSV) para comprobar
+# con datos reales si el filtro de verdad funciona.
+# Origen: resultados reales del 19-oct al 13-nov-2026 -> 2 am 73 %, 3 am 92 %, 6 am 70 %,
+# 2 pm 69 %; en cambio 10 am solo 25 %. Son pocas operaciones: hay que confirmarlo.
+# Para cambiar las horas: edita este valor o pon HORAS_BUENAS en bot.yml. Vacío = todas las horas.
+HORAS_BUENAS = sorted({int(_h) for _h in os.getenv("HORAS_BUENAS", "2,3,6,14").split(",")
+                       if _h.strip()})
+
 try:
     import lorentzian as lz
 except Exception as _e:  # noqa: BLE001
@@ -369,6 +379,31 @@ def en_horario(ts: pd.Timestamp) -> bool:
     return ts.weekday() < 5 and HORA_INICIO_UTC <= ts.hour < HORA_FIN_UTC
 
 
+def hora_entrada(ts: pd.Timestamp) -> int:
+    """Hora Colombia/Perú de la ENTRADA (cierre de la vela de 5 min que abre en ts)."""
+    return (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota").hour
+
+
+def en_horas_buenas(ts: pd.Timestamp) -> bool:
+    return not HORAS_BUENAS or hora_entrada(ts) in HORAS_BUENAS
+
+
+def texto_horas():
+    if not HORAS_BUENAS:
+        return "todas las horas"
+    return ", ".join(f"{h}:00-{h}:59" for h in HORAS_BUENAS)
+
+
+def separar_horario(v: pd.DataFrame):
+    """Divide un CSV de vigilancia en (dentro del horario bueno, fuera)."""
+    if v.empty:
+        return v, v
+    horas = (pd.to_datetime(v["fecha_utc"], utc=True) + pd.Timedelta(minutes=MIN_VELA)) \
+        .dt.tz_convert("America/Bogota").dt.hour
+    dentro = horas.isin(HORAS_BUENAS) if HORAS_BUENAS else pd.Series(True, index=v.index)
+    return v[dentro.values], v[~dentro.values]
+
+
 def backtest(df: pd.DataFrame) -> dict:
     """% de acierto por modo ('tendencia' / 'lateral') con expiración EXPIRACION_VELAS."""
     df = indicadores(df)
@@ -425,7 +460,9 @@ def mensaje_ranking(tabla):
     lineas = "\n".join(f for _, f in filas)
     return (f"🤖 <b>Bot de señales activo</b> (5 min, expiración {EXPIRACION_VELAS * MIN_VELA} min)\n"
             f"Solo envío señales con ✅ (≥{MIN_WINRATE:.0f}% y ≥{MIN_OPERACIONES} operaciones):\n\n"
-            f"{lineas}")
+            f"{lineas}\n\n"
+            f"⏰ Vigilancias: solo aviso las entradas de {texto_horas()} (hora Colombia/Perú). "
+            f"Las demás horas se miden en silencio.")
 
 
 # ------------------------------------------------------------- BUCLE -------
@@ -458,7 +495,7 @@ def resumen_vigilancia():
     v = v[v["resultado"] != "EMPATE"]
     v["fecha_utc"] = pd.to_datetime(v["fecha_utc"], utc=True)
     hoy = pd.Timestamp.now(tz="UTC").normalize()
-    lineas = ["\n\n🔍 <b>Vigilancia RSI2</b> (solo observación, meta ≥56 %):"]
+    lineas = ["\n\n🔍 <b>Vigilancia RSI2</b> (todas las horas, solo observación, meta ≥56 %):"]
     for (par, e), x in v.groupby(["par", "expiracion_min"]):
         g = (x["resultado"] == "GANADA").sum()
         xh = x[x["fecha_utc"] >= hoy]
@@ -492,6 +529,20 @@ def real_vig_lz(par=None):
     return int((v["resultado"] == "GANADA").sum()), len(v)
 
 
+def real_horario(archivo, par=None, exp_min=None):
+    """Asertividad real SOLO de las entradas en horario bueno: (ganadas, total) sin empates."""
+    if not os.path.exists(archivo):
+        return 0, 0
+    v = pd.read_csv(archivo)
+    v = v[v["resultado"] != "EMPATE"]
+    if par:
+        v = v[v["par"] == par]
+    if exp_min:
+        v = v[v["expiracion_min"] == exp_min]
+    dentro, _ = separar_horario(v)
+    return int((dentro["resultado"] == "GANADA").sum()), len(dentro)
+
+
 def resumen_vig_lz():
     if not VIG_LZ:
         return ""
@@ -503,7 +554,8 @@ def resumen_vig_lz():
     hoy = pd.Timestamp.now(tz="UTC").normalize()
     xh = v[v["fecha_utc"] >= hoy]
     g, gh = (v["resultado"] == "GANADA").sum(), (xh["resultado"] == "GANADA").sum()
-    lineas = ["\n\n🧠 <b>Vigilancia RSI2 + Lorentzian</b> (15 min, solo observación, meta ≥56 %):",
+    lineas = ["\n\n🧠 <b>Vigilancia RSI2 + Lorentzian</b> (15 min, todas las horas, solo observación, "
+              "meta ≥56 %):",
               f"Todos los pares — hoy {txt_pct(gh, len(xh))} · total {txt_pct(g, len(v))}"]
     for par, x in v.groupby("par"):
         lineas.append(f"{nombre_par(par)}: {txt_pct((x['resultado'] == 'GANADA').sum(), len(x))}")
@@ -513,7 +565,7 @@ def resumen_vig_lz():
 def vigilar_lz(par, df, i, ts, abiertas, vistas):
     """Revisa el resultado de la operación abierta del par y busca una nueva señal D."""
     if par in abiertas:
-        vts, vlado, vprecio = abiertas[par]
+        vts, vlado, vprecio, avisar = abiertas[par]
         if vts not in df.index:
             del abiertas[par]
         else:
@@ -521,14 +573,17 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
             if k <= i:
                 cierre = df["Close"].iat[k]
                 res = guardar_vig_lz(par, vlado, vprecio, cierre, vts)
-                icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
-                enviar_con_grafico(
-                    f"🧠 {icono} <b>{res}</b> · RSI2 + Lorentzian · {nombre_par(par)} · "
-                    f"{LZ_EXP_VELAS * MIN_VELA} min\n"
-                    f"💵 Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}\n"
-                    f"📊 Asertividad real: {txt_pct(*real_vig_lz())} (todos los pares)",
-                    df, par=par, lado=vlado, ts=vts, precio=vprecio, minutos=LZ_EXP_VELAS * MIN_VELA,
-                    k=k, cierre=cierre, res=res, estrategia="RSI2 + Lorentzian")
+                if avisar:                       # fuera del horario bueno solo se guarda
+                    icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
+                    enviar_con_grafico(
+                        f"🧠 {icono} <b>{res}</b> · RSI2 + Lorentzian · {nombre_par(par)} · "
+                        f"{LZ_EXP_VELAS * MIN_VELA} min\n"
+                        f"💵 Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}\n"
+                        f"📊 Asertividad real: {txt_pct(*real_vig_lz())} (todos los pares)\n"
+                        f"⏰ En horario bueno: {txt_pct(*real_horario(ARCHIVO_VIG_LZ))}",
+                        df, par=par, lado=vlado, ts=vts, precio=vprecio,
+                        minutos=LZ_EXP_VELAS * MIN_VELA, k=k, cierre=cierre, res=res,
+                        estrategia="RSI2 + Lorentzian")
                 del abiertas[par]
     if par in abiertas or (par, ts) in vistas or not en_horario(ts) or lz is None:
         return
@@ -544,7 +599,12 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
     if est is None or est["sig"] != lado or not (est["sube"] if lado > 0 else est["baja"]):
         return
     precio = df["Close"].iat[i]
-    abiertas[par] = (ts, lado, precio)
+    avisar = en_horas_buenas(ts)
+    abiertas[par] = (ts, lado, precio, avisar)
+    if not avisar:
+        log.info("Lorentzian %s fuera del horario bueno (%s h): se mide en silencio.",
+                 par, hora_entrada(ts))
+        return
     hora_col = (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota")
     sentido = "arriba ⬆️" if lado > 0 else "abajo ⬇️"
     enviar_con_grafico(
@@ -556,15 +616,40 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
         f"📊 <b>ASERTIVIDAD</b>\n"
         f"• Prueba 3 años (7 pares): 50,6 % · ago-sep 2026: 56-58 %\n"
         f"• Real: {txt_pct(*real_vig_lz(par))} en {nombre_par(par)} · "
-        f"{txt_pct(*real_vig_lz())} en total\n\n"
+        f"{txt_pct(*real_vig_lz())} en total\n"
+        f"• ⏰ Real en horario bueno: {txt_pct(*real_horario(ARCHIVO_VIG_LZ))} (todos los pares)\n\n"
         f"🔍 Vigilancia RSI2 + Lorentzian + kernel: solo observar, NO operar.",
         df, par=par, lado=lado, ts=ts, precio=precio, estrategia="RSI2 + Lorentzian")
+
+
+def resumen_horario():
+    """Cómo va el filtro de horario: dentro vs fuera de las horas buenas (sin empates)."""
+    if not HORAS_BUENAS:
+        return ""
+    hoy = pd.Timestamp.now(tz="UTC").normalize()
+    lineas = [f"\n\n⏰ <b>Filtro de horario</b> ({texto_horas()}, meta ≥56 %):"]
+    fuentes = [("RSI2", ARCHIVO_VIGILANCIA)]
+    if VIG_LZ:
+        fuentes.append(("RSI2 + Lorentzian", ARCHIVO_VIG_LZ))
+    for nombre, archivo in fuentes:
+        if not os.path.exists(archivo):
+            lineas.append(f"{nombre}: aún sin datos")
+            continue
+        v = pd.read_csv(archivo)
+        v = v[v["resultado"] != "EMPATE"]
+        dentro, fuera = separar_horario(v)
+        dh = dentro[pd.to_datetime(dentro["fecha_utc"], utc=True) >= hoy]
+        gan = lambda x: int((x["resultado"] == "GANADA").sum())  # noqa: E731
+        lineas.append(f"{nombre} en horario bueno — hoy {txt_pct(gan(dh), len(dh))} · "
+                      f"total {txt_pct(gan(dentro), len(dentro))}")
+        lineas.append(f"   fuera de horario (no avisadas): total {txt_pct(gan(fuera), len(fuera))}")
+    return "\n".join(lineas)
 
 
 def mensaje_resumen():
     if not os.path.exists(ARCHIVO_RESULTADOS):
         return ("📋 <b>Resumen del día</b>\nHoy no hubo señales que pasaran el filtro."
-                + resumen_vigilancia() + resumen_vig_lz())
+                + resumen_horario() + resumen_vigilancia() + resumen_vig_lz())
     r = pd.read_csv(ARCHIVO_RESULTADOS)
     r = r[r["resultado"] != "EMPATE"]
     r["fecha_utc"] = pd.to_datetime(r["fecha_utc"], utc=True)
@@ -584,7 +669,8 @@ def mensaje_resumen():
         por_par = dia.groupby("par")["resultado"].apply(
             lambda v: f"{(v == 'GANADA').sum()}/{len(v)}")
         partes.append("\nPor par hoy: " + ", ".join(f"{k} {v}" for k, v in por_par.items()))
-    return "📋 <b>Resumen del día</b>\n" + "\n".join(partes) + resumen_vigilancia() + resumen_vig_lz()
+    return ("📋 <b>Resumen del día</b>\n" + "\n".join(partes) + resumen_horario()
+            + resumen_vigilancia() + resumen_vig_lz())
 
 
 def backtest_vig(df, expiraciones):
@@ -654,9 +740,9 @@ def main():
     enviadas = {}      # (par, ts_vela) -> dict con la señal para verificar
     ya_vistas = set()
     resumen_enviado = set()
-    vig_abiertas = {}   # (par, exp) -> (ts, lado, precio)
+    vig_abiertas = {}   # (par, exp) -> (ts, lado, precio, avisar)
     vig_vistas = set()
-    lz_abiertas = {}    # par -> (ts, lado, precio) de la vigilancia D
+    lz_abiertas = {}    # par -> (ts, lado, precio, avisar) de la vigilancia D
     lz_vistas = set()
 
     while time.time() < fin:
@@ -709,35 +795,47 @@ def main():
                     del enviadas[clave]
 
             # ---- Modo vigilancia (RSI2): verificar resultados y buscar nuevas señales
-            for (vp, ve), (vts, vlado, vprecio) in list(vig_abiertas.items()):
+            for (vp, ve), (vts, vlado, vprecio, vavisar) in list(vig_abiertas.items()):
                 if vp != par or vts not in df.index:
                     continue
                 k = df.index.get_loc(vts) + ve
                 if k <= i:
                     cierre = df["Close"].iat[k]
                     res = guardar_vigilancia(par, ve, vlado, vprecio, cierre, vts)
-                    icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
-                    enviar_con_grafico(
-                        f"🔍 {icono} <b>{res}</b> · {nombre_par(par)} · {ve * MIN_VELA} min\n"
-                        f"💵 Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}\n"
-                        f"📊 Asertividad real: {txt_pct(*real_vig(par, ve))}",
-                        df, par=par, lado=vlado, ts=vts, precio=vprecio,
-                        minutos=ve * MIN_VELA, k=k, cierre=cierre, res=res)
+                    if vavisar:                  # fuera del horario bueno solo se guarda
+                        icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
+                        enviar_con_grafico(
+                            f"🔍 {icono} <b>{res}</b> · {nombre_par(par)} · {ve * MIN_VELA} min\n"
+                            f"💵 Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}\n"
+                            f"📊 Asertividad real: {txt_pct(*real_vig(par, ve))}\n"
+                            f"⏰ En horario bueno: "
+                            f"{txt_pct(*real_horario(ARCHIVO_VIGILANCIA, par, ve * MIN_VELA))}",
+                            df, par=par, lado=vlado, ts=vts, precio=vprecio,
+                            minutos=ve * MIN_VELA, k=k, cierre=cierre, res=res)
                     del vig_abiertas[(vp, ve)]
             if par in VIGILANCIA and (par, ts) not in vig_vistas and en_horario(ts):
                 vig_vistas.add((par, ts))
                 libres = [e for e in VIGILANCIA[par] if (par, e) not in vig_abiertas]
                 lado = senal_rsi2(df, i) if libres else 0
-                if lado:
+                avisar = en_horas_buenas(ts)
+                if lado and not avisar:
+                    # Fuera del horario bueno: se mide en silencio (sin mensaje en Telegram)
                     precio = df["Close"].iat[i]
                     for e in libres:
-                        vig_abiertas[(par, e)] = (ts, lado, precio)
+                        vig_abiertas[(par, e)] = (ts, lado, precio, False)
+                    log.info("RSI2 %s fuera del horario bueno (%s h): se mide en silencio.",
+                             par, hora_entrada(ts))
+                elif lado:
+                    precio = df["Close"].iat[i]
+                    for e in libres:
+                        vig_abiertas[(par, e)] = (ts, lado, precio, True)
                     hora_col = (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota")
                     pcts = []
                     for e in libres:
                         hg, ht = TABLA_VIG.get(par, {}).get(e, (0, 0))
                         pcts.append(f"• {e * MIN_VELA} min: histórico {txt_pct(hg, ht)} · "
-                                    f"real {txt_pct(*real_vig(par, e))}")
+                                    f"real {txt_pct(*real_vig(par, e))} · ⏰ en horario bueno "
+                                    f"{txt_pct(*real_horario(ARCHIVO_VIGILANCIA, par, e * MIN_VELA))}")
                     flecha = "🔺🔺" if lado > 0 else "🔻🔻"
                     sentido = "arriba ⬆️" if lado > 0 else "abajo ⬇️"
                     enviar_con_grafico(
