@@ -1,0 +1,139 @@
+clave,variable,grupo,periodo,ganadas,total
+RSI2 USDCAD 15,hora,10 h,entreno,107,218
+RSI2 USDCAD 15,hora,10 h,prueba,60,114
+RSI2 USDCAD 15,hora,11 h,entreno,137,259
+RSI2 USDCAD 15,hora,11 h,prueba,59,123
+RSI2 USDCAD 15,hora,12 h,entreno,145,273
+RSI2 USDCAD 15,hora,12 h,prueba,60,122
+RSI2 USDCAD 15,hora,13 h,entreno,150,284
+RSI2 USDCAD 15,hora,13 h,prueba,68,135
+RSI2 USDCAD 15,hora,14 h,entreno,149,267
+RSI2 USDCAD 15,hora,14 h,prueba,56,131
+RSI2 USDCAD 15,hora,15 h,entreno,8,14
+RSI2 USDCAD 15,hora,15 h,prueba,5,9
+RSI2 USDCAD 15,hora,2 h,entreno,99,225
+RSI2 USDCAD 15,hora,2 h,prueba,75,134
+RSI2 USDCAD 15,hora,3 h,entreno,121,248
+RSI2 USDCAD 15,hora,3 h,prueba,61,108
+RSI2 USDCAD 15,hora,4 h,entreno,112,225
+RSI2 USDCAD 15,hora,4 h,prueba,52,99
+RSI2 USDCAD 15,hora,5 h,entreno,126,261
+RSI2 USDCAD 15,hora,5 h,prueba,63,104
+RSI2 USDCAD 15,hora,6 h,entreno,143,280
+RSI2 USDCAD 15,hora,6 h,prueba,55,109
+RSI2 USDCAD 15,hora,7 h,entreno,109,239
+RSI2 USDCAD 15,hora,7 h,prueba,60,141
+RSI2 USDCAD 15,hora,8 h,entreno,115,227
+RSI2 USDCAD 15,hora,8 h,prueba,60,109
+RSI2 USDCAD 15,hora,9 h,entreno,110,242
+RSI2 USDCAD 15,hora,9 h,prueba,59,112
+RSI2 USDCAD 15,dia,jueves,entreno,337,650
+RSI2 USDCAD 15,dia,jueves,prueba,161,312
+RSI2 USDCAD 15,dia,lunes,entreno,325,644
+RSI2 USDCAD 15,dia,lunes,prueba,156,313
+RSI2 USDCAD 15,dia,martes,entreno,322,655
+RSI2 USDCAD 15,dia,martes,prueba,159,312
+RSI2 USDCAD 15,dia,miércoles,entreno,326,629
+RSI2 USDCAD 15,dia,miércoles,prueba,165,327
+RSI2 USDCAD 15,dia,viernes,entreno,321,684
+RSI2 USDCAD 15,dia,viernes,prueba,152,286
+RSI2 USDCAD 15,lado,CALL,entreno,904,1799
+RSI2 USDCAD 15,lado,CALL,prueba,431,842
+RSI2 USDCAD 15,lado,PUT,entreno,727,1463
+RSI2 USDCAD 15,lado,PUT,prueba,362,708
+RSI2 USDCAD 15,noticias,no,entreno,1457,2908
+RSI2 USDCAD 15,noticias,no,prueba,705,1378
+RSI2 USDCAD 15,noticias,sí,entreno,174,354
+RSI2 USDCAD 15,noticias,sí,prueba,88,172
+RSI2 USDCAD 30,hora,10 h,entreno,94,185
+RSI2 USDCAD 30,hora,10 h,prueba,60,99
+RSI2 USDCAD 30,hora,11 h,entreno,116,215
+RSI2 USDCAD 30,hora,11 h,prueba,47,106
+RSI2 USDCAD 30,hora,12 h,entreno,119,232
+RSI2 USDCAD 30,hora,12 h,prueba,54,98
+RSI2 USDCAD 30,hora,13 h,entreno,117,234
+RSI2 USDCAD 30,hora,13 h,prueba,63,114
+RSI2 USDCAD 30,hora,14 h,entreno,124,223
+RSI2 USDCAD 30,hora,14 h,prueba,42,100
+RSI2 USDCAD 30,hora,15 h,entreno,5,11
+RSI2 USDCAD 30,hora,15 h,prueba,4,8
+RSI2 USDCAD 30,hora,2 h,entreno,93,198
+RSI2 USDCAD 30,hora,2 h,prueba,58,116
+RSI2 USDCAD 30,hora,3 h,entreno,104,199
+RSI2 USDCAD 30,hora,3 h,prueba,45,98
+RSI2 USDCAD 30,hora,4 h,entreno,103,194
+RSI2 USDCAD 30,hora,4 h,prueba,43,83
+RSI2 USDCAD 30,hora,5 h,entreno,108,207
+RSI2 USDCAD 30,hora,5 h,prueba,56,92
+RSI2 USDCAD 30,hora,6 h,entreno,113,231
+RSI2 USDCAD 30,hora,6 h,prueba,44,88
+RSI2 USDCAD 30,hora,7 h,entreno,90,199
+RSI2 USDCAD 30,hora,7 h,prueba,50,115
+RSI2 USDCAD 30,hora,8 h,entreno,97,194
+RSI2 USDCAD 30,hora,8 h,prueba,53,93
+RSI2 USDCAD 30,hora,9 h,entreno,106,201
+RSI2 USDCAD 30,hora,9 h,prueba,50,95
+RSI2 USDCAD 30,dia,jueves,entreno,300,549
+RSI2 USDCAD 30,dia,jueves,prueba,132,256
+RSI2 USDCAD 30,dia,lunes,entreno,268,538
+RSI2 USDCAD 30,dia,lunes,prueba,127,257
+RSI2 USDCAD 30,dia,martes,entreno,278,553
+RSI2 USDCAD 30,dia,martes,prueba,138,267
+RSI2 USDCAD 30,dia,miércoles,entreno,272,524
+RSI2 USDCAD 30,dia,miércoles,prueba,137,274
+RSI2 USDCAD 30,dia,viernes,entreno,271,559
+RSI2 USDCAD 30,dia,viernes,prueba,135,251
+RSI2 USDCAD 30,lado,CALL,entreno,756,1490
+RSI2 USDCAD 30,lado,CALL,prueba,362,702
+RSI2 USDCAD 30,lado,PUT,entreno,633,1233
+RSI2 USDCAD 30,lado,PUT,prueba,307,603
+RSI2 USDCAD 30,noticias,no,entreno,1240,2427
+RSI2 USDCAD 30,noticias,no,prueba,596,1162
+RSI2 USDCAD 30,noticias,sí,entreno,149,296
+RSI2 USDCAD 30,noticias,sí,prueba,73,143
+RSI2 GBPUSD 30,hora,10 h,entreno,96,209
+RSI2 GBPUSD 30,hora,10 h,prueba,50,91
+RSI2 GBPUSD 30,hora,11 h,entreno,100,223
+RSI2 GBPUSD 30,hora,11 h,prueba,52,104
+RSI2 GBPUSD 30,hora,12 h,entreno,111,228
+RSI2 GBPUSD 30,hora,12 h,prueba,51,106
+RSI2 GBPUSD 30,hora,13 h,entreno,110,233
+RSI2 GBPUSD 30,hora,13 h,prueba,52,104
+RSI2 GBPUSD 30,hora,14 h,entreno,112,229
+RSI2 GBPUSD 30,hora,14 h,prueba,53,113
+RSI2 GBPUSD 30,hora,15 h,entreno,11,20
+RSI2 GBPUSD 30,hora,15 h,prueba,11,18
+RSI2 GBPUSD 30,hora,2 h,entreno,88,188
+RSI2 GBPUSD 30,hora,2 h,prueba,37,91
+RSI2 GBPUSD 30,hora,3 h,entreno,96,199
+RSI2 GBPUSD 30,hora,3 h,prueba,49,88
+RSI2 GBPUSD 30,hora,4 h,entreno,93,181
+RSI2 GBPUSD 30,hora,4 h,prueba,38,73
+RSI2 GBPUSD 30,hora,5 h,entreno,101,202
+RSI2 GBPUSD 30,hora,5 h,prueba,46,91
+RSI2 GBPUSD 30,hora,6 h,entreno,120,244
+RSI2 GBPUSD 30,hora,6 h,prueba,46,97
+RSI2 GBPUSD 30,hora,7 h,entreno,124,222
+RSI2 GBPUSD 30,hora,7 h,prueba,46,98
+RSI2 GBPUSD 30,hora,8 h,entreno,99,187
+RSI2 GBPUSD 30,hora,8 h,prueba,56,102
+RSI2 GBPUSD 30,hora,9 h,entreno,106,209
+RSI2 GBPUSD 30,hora,9 h,prueba,61,105
+RSI2 GBPUSD 30,dia,jueves,entreno,281,548
+RSI2 GBPUSD 30,dia,jueves,prueba,137,257
+RSI2 GBPUSD 30,dia,lunes,entreno,286,590
+RSI2 GBPUSD 30,dia,lunes,prueba,128,267
+RSI2 GBPUSD 30,dia,martes,entreno,276,547
+RSI2 GBPUSD 30,dia,martes,prueba,116,262
+RSI2 GBPUSD 30,dia,miércoles,entreno,246,507
+RSI2 GBPUSD 30,dia,miércoles,prueba,156,279
+RSI2 GBPUSD 30,dia,viernes,entreno,278,582
+RSI2 GBPUSD 30,dia,viernes,prueba,111,216
+RSI2 GBPUSD 30,lado,CALL,entreno,745,1465
+RSI2 GBPUSD 30,lado,CALL,prueba,310,640
+RSI2 GBPUSD 30,lado,PUT,entreno,622,1309
+RSI2 GBPUSD 30,lado,PUT,prueba,338,641
+RSI2 GBPUSD 30,noticias,no,entreno,1215,2487
+RSI2 GBPUSD 30,noticias,no,prueba,585,1162
+RSI2 GBPUSD 30,noticias,sí,entreno,152,287
+RSI2 GBPUSD 30,noticias,sí,prueba,63,119

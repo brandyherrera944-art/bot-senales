@@ -55,6 +55,19 @@ ARCHIVO_VIG_LZ = "vigilancia_lz.csv"
 HORAS_BUENAS = sorted({int(_h) for _h in os.getenv("HORAS_BUENAS", "2,3,6,14").split(",")
                        if _h.strip()})
 
+# Aprendizaje: el bot guarda el contexto de cada operación de vigilancia (hora, fuerza del RSI2,
+# ADX, volatilidad, distancia a la EMA200, noticias...) y aprende qué condiciones ganan o pierden.
+# Solo da por BUENA o MALA una condición si se cumple en las operaciones reales Y en la prueba de
+# 3 años (aprendizaje_historial.csv). Si no hay historia para esa condición, exige que se cumpla
+# en la mitad antigua y en la mitad reciente de los datos reales. Así no se deja engañar por rachas.
+# Las señales con una condición MALA confirmada no se avisan (se siguen midiendo en silencio).
+APRENDIZAJE = os.getenv("APRENDIZAJE", "1") == "1"
+ARCHIVO_APRENDIZAJE = "aprendizaje.csv"
+ARCHIVO_HISTORIAL = "aprendizaje_historial.csv"
+MIN_REAL_APRENDER = 20        # operaciones reales mínimas para juzgar una condición
+APRENDIDO = {}                # lo aprendido, se recalcula cada hora con aprender()
+CONTEXTOS = {}                # (estrategia, par, ts) -> contexto de la entrada
+
 try:
     import lorentzian as lz
 except Exception as _e:  # noqa: BLE001
@@ -75,6 +88,8 @@ log = logging.getLogger("bot")
 
 # ------------------------------------------------------------- TELEGRAM ----
 def enviar(texto: str) -> None:
+    if len(texto) > 4000:          # límite de Telegram: se corta en un salto de línea
+        texto = texto[:texto.rfind("\n", 0, 3980)] + "\n…"
     if not (TELEGRAM_TOKEN and TELEGRAM_CHAT_ID):
         print("\n[MODO PRUEBA - sin Telegram]\n" + texto + "\n")
         return
@@ -404,6 +419,312 @@ def separar_horario(v: pd.DataFrame):
     return v[dentro.values], v[~dentro.values]
 
 
+# ---------------------------------------------------------- APRENDIZAJE ----
+DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+VARIABLES = {"hora": "hora", "dia": "día", "lado": "dirección", "rsi2": "fuerza RSI2",
+             "adx": "ADX", "volatilidad": "volatilidad", "dist_ema": "distancia a EMA200",
+             "noticias": "hora de noticias", "par": "par"}
+COLUMNAS_APRENDIZAJE = ["fecha_utc", "estrategia", "par", "expiracion_min", "avisada", "motivo",
+                        "resultado", "hora", "dia", "lado", "rsi2", "adx", "vol_rel", "dist_ema",
+                        "noticias"]
+
+
+def es_hora_noticias(entrada: pd.Timestamp) -> bool:
+    """8:15-9:00 y 9:45-10:15 hora de Nueva York (salen casi todos los datos fuertes)."""
+    t = entrada.tz_convert("America/New_York")
+    m = t.hour * 60 + t.minute
+    return (8 * 60 + 15 <= m <= 9 * 60) or (9 * 60 + 45 <= m <= 10 * 60 + 15)
+
+
+def contexto(df, i, lado) -> dict:
+    """Datos de la vela de la señal (índice i, ya con indicadores) que el bot usa para aprender."""
+    entrada = df.index[i] + pd.Timedelta(minutes=MIN_VELA)
+    local = entrada.tz_convert("America/Bogota")
+    atr = df["atr"].iat[i]
+    mediana = df["atr"].iloc[max(0, i - 288):i + 1].median()     # ATR típico del último día
+    r2 = df["rsi2"].iat[i]
+    return {
+        "hora": int(local.hour),
+        "dia": int(local.dayofweek),
+        "lado": "CALL" if lado > 0 else "PUT",
+        "rsi2": float(r2 if lado > 0 else 100 - r2),   # distancia al extremo: 0 = lo más extremo
+        "adx": float(df["adx"].iat[i]),
+        "vol_rel": float(atr / mediana) if mediana and mediana > 0 else np.nan,
+        "dist_ema": float(abs(df["Close"].iat[i] - df["ema_l"].iat[i]) / atr) if atr > 0 else np.nan,
+        "noticias": bool(es_hora_noticias(entrada)),
+    }
+
+
+def _num(x):
+    try:
+        x = float(x)
+    except (TypeError, ValueError):
+        return None
+    return None if np.isnan(x) else x
+
+
+def grupos(ctx: dict) -> dict:
+    """Pasa un contexto a grupos con nombre: es lo que se compara al aprender."""
+    g = {}
+    if _num(ctx.get("hora")) is not None:
+        g["hora"] = f"{int(_num(ctx['hora']))} h"
+    if _num(ctx.get("dia")) is not None:
+        g["dia"] = DIAS[int(_num(ctx["dia"]))]
+    if ctx.get("lado") in ("CALL", "PUT"):
+        g["lado"] = ctx["lado"]
+    v = _num(ctx.get("rsi2"))
+    if v is not None:
+        g["rsi2"] = "muy extremo (<3)" if v < 3 else ("extremo (3-6)" if v < 6 else "justo (6-10)")
+    v = _num(ctx.get("adx"))
+    if v is not None:
+        g["adx"] = "débil (<20)" if v < 20 else ("normal (20-30)" if v < 30 else "fuerte (>30)")
+    v = _num(ctx.get("vol_rel"))
+    if v is not None:
+        g["volatilidad"] = "baja" if v < 0.8 else ("normal" if v <= 1.25 else "alta")
+    v = _num(ctx.get("dist_ema"))
+    if v is not None:
+        g["dist_ema"] = ("cerca (<1 ATR)" if v < 1 else
+                         ("media (1-3 ATR)" if v <= 3 else "lejos (>3 ATR)"))
+    n = ctx.get("noticias")
+    if isinstance(n, (bool, np.bool_)) or str(n) in ("True", "False"):
+        g["noticias"] = "sí" if str(n) == "True" else "no"
+    if ctx.get("par"):
+        g["par"] = nombre_par(ctx["par"])
+    return g
+
+
+def clave_de(estrategia, par, exp_min):
+    return f"RSI2 {par} {int(exp_min)}" if estrategia == "RSI2" else "LZ"
+
+
+def nombre_clave(clave):
+    if clave == "LZ":
+        return "RSI2 + Lorentzian"
+    _, par, e = clave.split()
+    return f"RSI2 {nombre_par(par)} {e}m"
+
+
+def guardar_aprendizaje(estrategia, par, exp_min, ts, ctx, avisada, motivo, res):
+    nuevo = not os.path.exists(ARCHIVO_APRENDIZAJE)
+    fila = {"fecha_utc": f"{ts:%Y-%m-%d %H:%M}", "estrategia": estrategia, "par": par,
+            "expiracion_min": int(exp_min), "avisada": bool(avisada), "motivo": motivo,
+            "resultado": res, **{k: ctx.get(k) for k in COLUMNAS_APRENDIZAJE[7:]}}
+    pd.DataFrame([fila], columns=COLUMNAS_APRENDIZAJE).to_csv(
+        ARCHIVO_APRENDIZAJE, mode="a", header=nuevo, index=False)
+
+
+def wilson(g, n, z=1.96):
+    """Rango probable (95 %) del acierto verdadero con g ganadas de n."""
+    if n == 0:
+        return 0.0, 1.0
+    p = g / n
+    c = (p + z * z / (2 * n)) / (1 + z * z / n)
+    m = z * np.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / (1 + z * z / n)
+    return c - m, c + m
+
+
+def estado_regla(g, n, gv, nv, gn, nn, he_g, he_n, hp_g, hp_n):
+    """'buena', 'mala' u 'observación'. Con historia de 3 años, tiene que cumplirse en los reales
+    y en las dos partes de la historia. Sin historia, en la mitad vieja y la reciente de los reales."""
+    if n < MIN_REAL_APRENDER:
+        return "observación"
+    p = g / n
+    if he_n >= 100 and hp_n >= 100:
+        e, q = he_g / he_n, hp_g / hp_n
+        if p >= 0.56 and e >= 0.54 and q >= 0.54:
+            return "buena"
+        if p <= 0.44 and e <= 0.48 and q <= 0.48:
+            return "mala"
+        return "observación"
+    if n < 40 or nv < 15 or nn < 15:
+        return "observación"
+    lb, ub = wilson(g, n)
+    if lb >= 0.50 and gv / nv >= 0.54 and gn / nn >= 0.54:
+        return "buena"
+    if ub <= 0.50 and gv / nv <= 0.46 and gn / nn <= 0.46:
+        return "mala"
+    return "observación"
+
+
+def cargar_reales() -> pd.DataFrame:
+    """Todas las operaciones reales de vigilancia (sin empates) con sus grupos en columnas g_*.
+    Las de antes del aprendizaje solo tienen hora, día y dirección."""
+    partes = []
+    for estrategia, archivo in (("RSI2", ARCHIVO_VIGILANCIA), ("LZ", ARCHIVO_VIG_LZ)):
+        if os.path.exists(archivo):
+            x = pd.read_csv(archivo)
+            x["estrategia"] = estrategia
+            partes.append(x)
+    if not partes:
+        return pd.DataFrame()
+    v = pd.concat(partes, ignore_index=True)
+    v = v[v["resultado"] != "EMPATE"].reset_index(drop=True)
+    if v.empty:
+        return v
+    llave = ["estrategia", "par", "expiracion_min", "fecha_utc"]
+    if os.path.exists(ARCHIVO_APRENDIZAJE):
+        a = pd.read_csv(ARCHIVO_APRENDIZAJE).drop_duplicates(llave, keep="last")
+        a = a[llave + COLUMNAS_APRENDIZAJE[7:]].drop(columns=["lado"])
+        v = v.merge(a, on=llave, how="left")
+    entrada = pd.to_datetime(v["fecha_utc"], utc=True) + pd.Timedelta(minutes=MIN_VELA)
+    local = entrada.dt.tz_convert("America/Bogota")
+    v["entrada"] = entrada
+    v["hora"] = v["hora"].fillna(local.dt.hour) if "hora" in v else local.dt.hour
+    v["dia"] = v["dia"].fillna(local.dt.dayofweek) if "dia" in v else local.dt.dayofweek
+    v["lado"] = v["direccion"]
+    v["gano"] = (v["resultado"] == "GANADA").astype(int)
+    v["clave"] = [clave_de(e, p, m) for e, p, m in zip(v["estrategia"], v["par"], v["expiracion_min"])]
+    filas = []
+    for r in v.to_dict("records"):
+        if r["estrategia"] != "LZ":
+            r = {**r, "par": None}            # el par solo se compara dentro del Lorentzian
+        filas.append(grupos(r))
+    g = pd.DataFrame(filas, index=v.index).add_prefix("g_")
+    return v.join(g)
+
+
+def aprender() -> dict:
+    """Revisa todas las condiciones con los datos reales (y la historia de 3 años si existe)."""
+    reales = cargar_reales()
+    hist = pd.read_csv(ARCHIVO_HISTORIAL) if os.path.exists(ARCHIVO_HISTORIAL) else pd.DataFrame(
+        columns=["clave", "variable", "grupo", "periodo", "ganadas", "total"])
+    reglas = []
+    if not reales.empty:
+        for clave, x in reales.groupby("clave"):
+            base = x["gano"].mean()
+            mitad = x["entrada"].sort_values().iloc[len(x) // 2]
+            hc = hist[hist["clave"] == clave]
+            for var in VARIABLES:
+                col = f"g_{var}"
+                if col not in x:
+                    continue
+                for grupo, y in x.dropna(subset=[col]).groupby(col):
+                    vieja, nueva = y[y["entrada"] < mitad], y[y["entrada"] >= mitad]
+                    h = hc[(hc["variable"] == var) & (hc["grupo"] == grupo)]
+                    he, hp = h[h["periodo"] == "entreno"], h[h["periodo"] == "prueba"]
+                    fila = dict(clave=clave, variable=var, grupo=grupo,
+                                g=int(y["gano"].sum()), n=len(y), base=base,
+                                gv=int(vieja["gano"].sum()), nv=len(vieja),
+                                gn=int(nueva["gano"].sum()), nn=len(nueva),
+                                he_g=int(he["ganadas"].sum()), he_n=int(he["total"].sum()),
+                                hp_g=int(hp["ganadas"].sum()), hp_n=int(hp["total"].sum()))
+                    fila["estado"] = estado_regla(*(fila[k] for k in (
+                        "g", "n", "gv", "nv", "gn", "nn", "he_g", "he_n", "hp_g", "hp_n")))
+                    reglas.append(fila)
+    r = pd.DataFrame(reglas)
+    if not r.empty:
+        # cuánto se aleja del promedio, pesado por cantidad de operaciones (para ordenar pistas)
+        r["peso"] = (r["g"] / r["n"] - r["base"]).abs() * np.sqrt(r["n"])
+    return {"reglas": r, "n_reales": len(reales)}
+
+
+def txt_hist(fila):
+    n = fila["he_n"] + fila["hp_n"]
+    return f" · 3 años {100 * (fila['he_g'] + fila['hp_g']) / n:.0f} %" if n else " · sin historia"
+
+
+def consultar(clave, ctx):
+    """Lo aprendido que aplica a una señal: (malas, buenas, pistas) como listas de filas."""
+    r = APRENDIDO.get("reglas")
+    if r is None or r.empty:
+        return [], [], []
+    g = grupos(ctx)
+    sub = r[r["clave"] == clave]
+    sub = sub[[g.get(v) == gr for v, gr in zip(sub["variable"], sub["grupo"])]]
+    malas = sub[sub["estado"] == "mala"].to_dict("records")
+    buenas = sub[sub["estado"] == "buena"].to_dict("records")
+    pistas = sub[sub["n"] >= 5].sort_values("peso", ascending=False).head(2).to_dict("records")
+    return malas, buenas, pistas
+
+
+def texto_aprendizaje(clave, ctx):
+    """Líneas para el mensaje de la señal: lo que pasó antes en casos parecidos."""
+    if not APRENDIZAJE:
+        return ""
+    _, buenas, pistas = consultar(clave, ctx)
+    lineas = []
+    for f in pistas:
+        lineas.append(f"• {VARIABLES[f['variable']]} {f['grupo']}: real {txt_pct(f['g'], f['n'])}"
+                      f"{txt_hist(f)}")
+    if buenas:
+        lineas.append("⭐ Condición buena confirmada: " + ", ".join(
+            f"{VARIABLES[f['variable']]} {f['grupo']}" for f in buenas))
+    return ("\n🧠 <b>Casos parecidos</b>\n" + "\n".join(lineas) + "\n") if lineas else ""
+
+
+def decidir_aviso(clave, ts, ctx):
+    """(avisar, motivo). Motivo: '' si se avisa, 'horario' o 'aprendizaje' si se mide en silencio."""
+    if not en_horas_buenas(ts):
+        return False, "horario"
+    if APRENDIZAJE:
+        malas, _, _ = consultar(clave, ctx)
+        if malas:
+            log.info("%s: condición mala aprendida (%s), se mide en silencio.", clave,
+                     ", ".join(f"{m['variable']}={m['grupo']}" for m in malas))
+            return False, "aprendizaje"
+    return True, ""
+
+
+def actualizar_aprendizaje():
+    """Recalcula lo aprendido (al empezar y cada hora). Si falla, el bot sigue igual que antes."""
+    if not APRENDIZAJE:
+        return
+    try:
+        APRENDIDO.clear()
+        APRENDIDO.update(aprender())
+        r = APRENDIDO["reglas"]
+        if not r.empty:
+            log.info("Aprendizaje: %d condiciones revisadas, %d buenas y %d malas confirmadas.",
+                     len(r), int((r["estado"] == "buena").sum()), int((r["estado"] == "mala").sum()))
+    except Exception as e:  # noqa: BLE001
+        APRENDIDO.clear()
+        log.warning("No se pudo actualizar el aprendizaje: %s", e)
+
+
+def resumen_aprendizaje():
+    if not APRENDIZAJE:
+        return ""
+    try:
+        ap = aprender()
+    except Exception as e:  # noqa: BLE001
+        log.warning("No se pudo calcular el aprendizaje: %s", e)
+        return ""
+    r = ap["reglas"]
+    lineas = ["\n\n🧠 <b>Aprendizaje</b> (reales + prueba de 3 años):"]
+    if os.path.exists(ARCHIVO_APRENDIZAJE):
+        a = pd.read_csv(ARCHIVO_APRENDIZAJE)
+        a = a[pd.to_datetime(a["fecha_utc"], utc=True) >= pd.Timestamp.now(tz="UTC").normalize()]
+        perd = a[a["resultado"] == "PERDIDA"]
+        if len(perd):
+            g = pd.DataFrame([grupos(x) for x in perd.to_dict("records")])
+            comunes = []
+            for var in ("volatilidad", "dist_ema", "rsi2", "adx", "hora", "lado"):
+                if var in g and g[var].notna().any():
+                    top = g[var].value_counts()
+                    comunes.append((top.iloc[0] / len(perd), f"{VARIABLES[var]} {top.index[0]} "
+                                                             f"({top.iloc[0]} de {len(perd)})"))
+            comunes.sort(reverse=True)
+            lineas.append(f"Pérdidas de hoy ({len(perd)}), lo más repetido: "
+                          + ", ".join(t for _, t in comunes[:2]))
+        silencio = int((a["motivo"] == "aprendizaje").sum())
+        if silencio:
+            lineas.append(f"Señales no avisadas hoy por lo aprendido: {silencio}")
+    if r.empty:
+        return "\n".join(lineas + ["Aún sin datos para aprender."])
+    for estado, titulo in (("buena", "✅ Buenas confirmadas"), ("mala", "❌ Malas confirmadas (no las aviso)")):
+        x = r[r["estado"] == estado].sort_values("peso", ascending=False).head(3)
+        lineas.append(f"{titulo}: " + ("ninguna todavía" if x.empty else "; ".join(
+            f"{nombre_clave(f['clave'])} · {VARIABLES[f['variable']]} {f['grupo']} "
+            f"{txt_pct(f['g'], f['n'])}{txt_hist(f)}" for f in x.to_dict("records"))))
+    obs = r[(r["estado"] == "observación") & (r["n"] >= 10)].sort_values("peso", ascending=False)
+    if len(obs):
+        lineas.append("🔎 Pistas sin confirmar:")
+        for f in obs.head(3).to_dict("records"):
+            lineas.append(f"• {nombre_clave(f['clave'])} · {VARIABLES[f['variable']]} {f['grupo']}: "
+                          f"real {txt_pct(f['g'], f['n'])}{txt_hist(f)}")
+    return "\n".join(lineas)
+
+
 def backtest(df: pd.DataFrame) -> dict:
     """% de acierto por modo ('tendencia' / 'lateral') con expiración EXPIRACION_VELAS."""
     df = indicadores(df)
@@ -565,15 +886,23 @@ def resumen_vig_lz():
 def vigilar_lz(par, df, i, ts, abiertas, vistas):
     """Revisa el resultado de la operación abierta del par y busca una nueva señal D."""
     if par in abiertas:
-        vts, vlado, vprecio, avisar = abiertas[par]
+        vts, vlado, vprecio, avisar, motivo = abiertas[par]
         if vts not in df.index:
             del abiertas[par]
+            CONTEXTOS.pop(("LZ", par, vts), None)
         else:
             k = df.index.get_loc(vts) + LZ_EXP_VELAS
             if k <= i:
                 cierre = df["Close"].iat[k]
                 res = guardar_vig_lz(par, vlado, vprecio, cierre, vts)
-                if avisar:                       # fuera del horario bueno solo se guarda
+                ctx = CONTEXTOS.pop(("LZ", par, vts), None) or {
+                    **contexto(df, df.index.get_loc(vts), vlado), "par": par}
+                try:
+                    guardar_aprendizaje("LZ", par, LZ_EXP_VELAS * MIN_VELA, vts, ctx, avisar,
+                                        motivo, res)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("No se pudo guardar el aprendizaje: %s", e)
+                if avisar:                       # las no avisadas solo se guardan
                     icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
                     enviar_con_grafico(
                         f"🧠 {icono} <b>{res}</b> · RSI2 + Lorentzian · {nombre_par(par)} · "
@@ -599,11 +928,13 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
     if est is None or est["sig"] != lado or not (est["sube"] if lado > 0 else est["baja"]):
         return
     precio = df["Close"].iat[i]
-    avisar = en_horas_buenas(ts)
-    abiertas[par] = (ts, lado, precio, avisar)
+    ctx = {**contexto(df, i, lado), "par": par}
+    CONTEXTOS[("LZ", par, ts)] = ctx
+    avisar, motivo = decidir_aviso("LZ", ts, ctx)
+    abiertas[par] = (ts, lado, precio, avisar, motivo)
     if not avisar:
-        log.info("Lorentzian %s fuera del horario bueno (%s h): se mide en silencio.",
-                 par, hora_entrada(ts))
+        log.info("Lorentzian %s no se avisa (%s, %s h): se mide en silencio.",
+                 par, motivo, hora_entrada(ts))
         return
     hora_col = (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota")
     sentido = "arriba ⬆️" if lado > 0 else "abajo ⬇️"
@@ -617,7 +948,8 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
         f"• Prueba 3 años (7 pares): 50,6 % · ago-sep 2026: 56-58 %\n"
         f"• Real: {txt_pct(*real_vig_lz(par))} en {nombre_par(par)} · "
         f"{txt_pct(*real_vig_lz())} en total\n"
-        f"• ⏰ Real en horario bueno: {txt_pct(*real_horario(ARCHIVO_VIG_LZ))} (todos los pares)\n\n"
+        f"• ⏰ Real en horario bueno: {txt_pct(*real_horario(ARCHIVO_VIG_LZ))} (todos los pares)\n"
+        + texto_aprendizaje("LZ", ctx) + "\n"
         f"🔍 Vigilancia RSI2 + Lorentzian + kernel: solo observar, NO operar.",
         df, par=par, lado=lado, ts=ts, precio=precio, estrategia="RSI2 + Lorentzian")
 
@@ -649,7 +981,8 @@ def resumen_horario():
 def mensaje_resumen():
     if not os.path.exists(ARCHIVO_RESULTADOS):
         return ("📋 <b>Resumen del día</b>\nHoy no hubo señales que pasaran el filtro."
-                + resumen_horario() + resumen_vigilancia() + resumen_vig_lz())
+                + resumen_horario() + resumen_vigilancia() + resumen_vig_lz()
+                + resumen_aprendizaje())
     r = pd.read_csv(ARCHIVO_RESULTADOS)
     r = r[r["resultado"] != "EMPATE"]
     r["fecha_utc"] = pd.to_datetime(r["fecha_utc"], utc=True)
@@ -670,7 +1003,7 @@ def mensaje_resumen():
             lambda v: f"{(v == 'GANADA').sum()}/{len(v)}")
         partes.append("\nPor par hoy: " + ", ".join(f"{k} {v}" for k, v in por_par.items()))
     return ("📋 <b>Resumen del día</b>\n" + "\n".join(partes) + resumen_horario()
-            + resumen_vigilancia() + resumen_vig_lz())
+            + resumen_vigilancia() + resumen_vig_lz() + resumen_aprendizaje())
 
 
 def backtest_vig(df, expiraciones):
@@ -740,10 +1073,11 @@ def main():
     enviadas = {}      # (par, ts_vela) -> dict con la señal para verificar
     ya_vistas = set()
     resumen_enviado = set()
-    vig_abiertas = {}   # (par, exp) -> (ts, lado, precio, avisar)
+    vig_abiertas = {}   # (par, exp) -> (ts, lado, precio, avisar, motivo)
     vig_vistas = set()
-    lz_abiertas = {}    # par -> (ts, lado, precio, avisar) de la vigilancia D
+    lz_abiertas = {}    # par -> (ts, lado, precio, avisar, motivo) de la vigilancia D
     lz_vistas = set()
+    actualizar_aprendizaje()
 
     while time.time() < fin:
         # Espera al cierre de la siguiente vela de 5 min (+25 s de margen)
@@ -764,6 +1098,7 @@ def main():
                 ultima_tabla = time.time()
             except Exception as e:  # noqa: BLE001
                 log.warning("Error recalculando backtest: %s", e)
+            actualizar_aprendizaje()
 
         try:
             datos = descargar(PARES, periodo="5d")
@@ -795,14 +1130,22 @@ def main():
                     del enviadas[clave]
 
             # ---- Modo vigilancia (RSI2): verificar resultados y buscar nuevas señales
-            for (vp, ve), (vts, vlado, vprecio, vavisar) in list(vig_abiertas.items()):
+            for (vp, ve), (vts, vlado, vprecio, vavisar, vmotivo) in list(vig_abiertas.items()):
                 if vp != par or vts not in df.index:
                     continue
                 k = df.index.get_loc(vts) + ve
                 if k <= i:
                     cierre = df["Close"].iat[k]
                     res = guardar_vigilancia(par, ve, vlado, vprecio, cierre, vts)
-                    if vavisar:                  # fuera del horario bueno solo se guarda
+                    ctx = CONTEXTOS.get(("RSI2", par, vts)) or contexto(df, df.index.get_loc(vts), vlado)
+                    try:
+                        guardar_aprendizaje("RSI2", par, ve * MIN_VELA, vts, ctx, vavisar, vmotivo, res)
+                    except Exception as e:  # noqa: BLE001
+                        log.warning("No se pudo guardar el aprendizaje: %s", e)
+                    if not any(p == par and t[0] == vts for (p, _), t in vig_abiertas.items()
+                               if (p, _) != (vp, ve)):
+                        CONTEXTOS.pop(("RSI2", par, vts), None)
+                    if vavisar:                  # las no avisadas solo se guardan
                         icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
                         enviar_con_grafico(
                             f"🔍 {icono} <b>{res}</b> · {nombre_par(par)} · {ve * MIN_VELA} min\n"
@@ -817,18 +1160,19 @@ def main():
                 vig_vistas.add((par, ts))
                 libres = [e for e in VIGILANCIA[par] if (par, e) not in vig_abiertas]
                 lado = senal_rsi2(df, i) if libres else 0
-                avisar = en_horas_buenas(ts)
-                if lado and not avisar:
-                    # Fuera del horario bueno: se mide en silencio (sin mensaje en Telegram)
+                if lado:
                     precio = df["Close"].iat[i]
+                    ctx = contexto(df, i, lado)
+                    CONTEXTOS[("RSI2", par, ts)] = ctx
+                    avisos = {e: decidir_aviso(clave_de("RSI2", par, e * MIN_VELA), ts, ctx)
+                              for e in libres}
                     for e in libres:
-                        vig_abiertas[(par, e)] = (ts, lado, precio, False)
-                    log.info("RSI2 %s fuera del horario bueno (%s h): se mide en silencio.",
-                             par, hora_entrada(ts))
-                elif lado:
-                    precio = df["Close"].iat[i]
-                    for e in libres:
-                        vig_abiertas[(par, e)] = (ts, lado, precio, True)
+                        vig_abiertas[(par, e)] = (ts, lado, precio, *avisos[e])
+                    libres = [e for e in libres if avisos[e][0]]     # solo se avisan estas
+                    if not libres:
+                        log.info("RSI2 %s no se avisa (%s, %s h): se mide en silencio.", par,
+                                 "/".join(sorted({m for _, m in avisos.values()})), hora_entrada(ts))
+                if lado and libres:
                     hora_col = (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota")
                     pcts = []
                     for e in libres:
@@ -844,7 +1188,8 @@ def main():
                         f"⌛ EXPIRACIÓN: {' y '.join(str(e * MIN_VELA) for e in libres)} minutos\n"
                         f"⏱️ ENTRADA: {hora_col:%H:%M}\n"
                         f"💵 Precio: {fmt(par, precio)}\n\n"
-                        f"📊 <b>ASERTIVIDAD</b>\n" + "\n".join(pcts) + "\n\n"
+                        f"📊 <b>ASERTIVIDAD</b>\n" + "\n".join(pcts) + "\n"
+                        + texto_aprendizaje(clave_de("RSI2", par, libres[0] * MIN_VELA), ctx) + "\n"
                         f"🔍 Modo vigilancia (RSI2): solo observar, NO operar.",
                         df, par=par, lado=lado, ts=ts, precio=precio)
 
