@@ -24,12 +24,15 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: Ejecutar bot
+        # Límite propio del paso: si el bot se demora, GitHub corta SOLO este paso y el
+        # paso de guardar igual alcanza a ejecutarse (antes se perdían los resultados).
+        timeout-minutes: 340
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           MIN_WINRATE: "73"
           EXPIRACION_VELAS: "3"
-          DURACION_MINUTOS: "345"
+          DURACION_MINUTOS: "330"
         run: python bot.py
       - name: Guardar resultados y mantener el bot activo
         if: always()
@@ -41,6 +44,7 @@ jobs:
           if [ -f resultados.csv ]; then git add resultados.csv; fi
           if [ -f vigilancia.csv ]; then git add vigilancia.csv; fi
           if [ -f vigilancia_lz.csv ]; then git add vigilancia_lz.csv; fi
+          if [ -f aprendizaje.csv ]; then git add aprendizaje.csv; fi
           git commit -m "Resultados $(date -u +%F_%H:%M)" || echo "sin cambios"
           git pull --rebase || true
           git push
