@@ -57,13 +57,14 @@ HORAS_BUENAS = sorted({int(_h) for _h in os.getenv("HORAS_BUENAS", "2,3,6,14").s
 
 # Aprendizaje: el bot guarda el contexto de cada operación de vigilancia (hora, fuerza del RSI2,
 # ADX, volatilidad, distancia a la EMA200, noticias...) y aprende qué condiciones ganan o pierden.
-# Solo da por BUENA o MALA una condición si se cumple en las operaciones reales Y en la prueba de
-# 3 años (aprendizaje_historial.csv). Si no hay historia para esa condición, exige que se cumpla
-# en la mitad antigua y en la mitad reciente de los datos reales. Así no se deja engañar por rachas.
+# Aprende SOLO de las operaciones reales desde que empezó el bot (19-oct-2026), no de años pasados.
+# Para no dejarse engañar por una racha, una condición solo queda BUENA o MALA si se cumple en la
+# mitad antigua Y en la mitad reciente de esas operaciones reales.
 # Las señales con una condición MALA confirmada no se avisan (se siguen midiendo en silencio).
 APRENDIZAJE = os.getenv("APRENDIZAJE", "1") == "1"
 ARCHIVO_APRENDIZAJE = "aprendizaje.csv"
 ARCHIVO_HISTORIAL = "aprendizaje_historial.csv"
+USAR_HISTORIAL = os.getenv("USAR_HISTORIAL", "0") == "1"   # años pasados: apagado por decisión de Brandy
 MIN_REAL_APRENDER = 20        # operaciones reales mínimas para juzgar una condición
 APRENDIDO = {}                # lo aprendido, se recalcula cada hora con aprender()
 CONTEXTOS = {}                # (estrategia, par, ts) -> contexto de la entrada
@@ -586,8 +587,9 @@ def cargar_reales() -> pd.DataFrame:
 def aprender() -> dict:
     """Revisa todas las condiciones con los datos reales (y la historia de 3 años si existe)."""
     reales = cargar_reales()
-    hist = pd.read_csv(ARCHIVO_HISTORIAL) if os.path.exists(ARCHIVO_HISTORIAL) else pd.DataFrame(
-        columns=["clave", "variable", "grupo", "periodo", "ganadas", "total"])
+    hist = pd.DataFrame(columns=["clave", "variable", "grupo", "periodo", "ganadas", "total"])
+    if USAR_HISTORIAL and os.path.exists(ARCHIVO_HISTORIAL):
+        hist = pd.read_csv(ARCHIVO_HISTORIAL)
     reglas = []
     if not reales.empty:
         for clave, x in reales.groupby("clave"):
@@ -619,6 +621,8 @@ def aprender() -> dict:
 
 
 def txt_hist(fila):
+    if not USAR_HISTORIAL:
+        return ""
     n = fila["he_n"] + fila["hp_n"]
     return f" · 3 años {100 * (fila['he_g'] + fila['hp_g']) / n:.0f} %" if n else " · sin historia"
 
@@ -690,7 +694,8 @@ def resumen_aprendizaje():
         log.warning("No se pudo calcular el aprendizaje: %s", e)
         return ""
     r = ap["reglas"]
-    lineas = ["\n\n🧠 <b>Aprendizaje</b> (reales + prueba de 3 años):"]
+    lineas = ["\n\n🧠 <b>Aprendizaje</b> (" + ("reales + prueba de 3 años" if USAR_HISTORIAL else
+                                             "solo operaciones reales desde que empezó el bot") + "):"]
     if os.path.exists(ARCHIVO_APRENDIZAJE):
         a = pd.read_csv(ARCHIVO_APRENDIZAJE)
         a = a[pd.to_datetime(a["fecha_utc"], utc=True) >= pd.Timestamp.now(tz="UTC").normalize()]
