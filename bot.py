@@ -69,6 +69,25 @@ MIN_REAL_APRENDER = 20        # operaciones reales mínimas para juzgar una cond
 APRENDIDO = {}                # lo aprendido, se recalcula cada hora con aprender()
 CONTEXTOS = {}                # (estrategia, par, ts) -> contexto de la entrada
 
+# Estrategias nuevas (vigilancia, solo observar): RSI2 + un segundo filtro, cada una por separado.
+#   SR  = RSI2 extremo justo en un soporte (CALL) o una resistencia (PUT) del último día.
+#   ENV = RSI2 extremo en la vela anterior y luego una vela envolvente en sentido contrario.
+#   DIV = divergencia: el precio hace un mínimo más bajo (máximo más alto) y el RSI2 no lo confirma.
+# Todo el horario del bot (2 am a 3 pm), los 7 pares, expiraciones de 15 y 30 min.
+NUEVAS = {
+    "SR": ("🧱", "RSI2 + Soportes/Resistencias"),
+    "ENV": ("🕯️", "RSI2 + Vela envolvente"),
+    "DIV": ("🔀", "RSI2 + Divergencia"),
+}
+NUEVAS_ACTIVAS = [x.strip().upper() for x in os.getenv("NUEVAS_ESTRATEGIAS", "SR,ENV,DIV").split(",")
+                  if x.strip().upper() in NUEVAS]
+NUEVAS_EXP_VELAS = [int(x) for x in os.getenv("NUEVAS_EXP_VELAS", "3,6").split(",") if x.strip()]
+ARCHIVO_NUEVAS = "estrategias_nuevas.csv"
+SR_VENTANA = 288              # niveles de los pivotes del último día (288 velas de 5 min)
+SR_TOLERANCIA = 0.3           # cuánto puede faltar para "tocar" el nivel, en ATR
+SR_TOQUES_MIN = int(os.getenv("SR_TOQUES_MIN", "2"))   # el nivel debe haberse tocado 2+ veces
+DIV_VENTANA = (5, 40)         # el mínimo/máximo anterior se busca entre 5 y 40 velas atrás
+
 try:
     import lorentzian as lz
 except Exception as _e:  # noqa: BLE001
@@ -88,6 +107,29 @@ log = logging.getLogger("bot")
 
 
 # ------------------------------------------------------------- TELEGRAM ----
+_ULTIMO_ENVIO = [0.0]
+
+
+def _post_telegram(metodo, **kwargs):
+    """Envía a Telegram con 1,1 s entre mensajes (para no pasarse del límite del chat).
+    Si Telegram pide esperar (error 429), espera lo que indica y reintenta una vez."""
+    for intento in range(2):
+        falta = 1.1 - (time.time() - _ULTIMO_ENVIO[0])
+        if falta > 0:
+            time.sleep(falta)
+        _ULTIMO_ENVIO[0] = time.time()
+        r = requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/{metodo}", **kwargs)
+        if r.status_code != 429 or intento:
+            return r
+        try:
+            espera = int(r.json().get("parameters", {}).get("retry_after", 5))
+        except Exception:  # noqa: BLE001
+            espera = 5
+        log.warning("Telegram pidió esperar %s s; reintento.", espera)
+        time.sleep(min(espera, 60) + 1)
+    return r
+
+
 def enviar(texto: str) -> None:
     if len(texto) > 4000:          # límite de Telegram: se corta en un salto de línea
         texto = texto[:texto.rfind("\n", 0, 3980)] + "\n…"
@@ -95,8 +137,8 @@ def enviar(texto: str) -> None:
         print("\n[MODO PRUEBA - sin Telegram]\n" + texto + "\n")
         return
     try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
+        r = _post_telegram(
+            "sendMessage",
             json={"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"},
             timeout=15)
         if r.status_code == 404:
@@ -115,8 +157,8 @@ def enviar_foto(png: bytes, texto: str) -> bool:
         print("\n[MODO PRUEBA - sin Telegram, con gráfico]\n" + texto + "\n")
         return True
     try:
-        r = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendPhoto",
+        r = _post_telegram(
+            "sendPhoto",
             data={"chat_id": TELEGRAM_CHAT_ID, "caption": texto, "parse_mode": "HTML"},
             files={"photo": ("grafico.png", png, "image/png")},
             timeout=30)
@@ -142,7 +184,7 @@ def enviar_con_grafico(texto: str, df, **datos) -> None:
 
 # ------------------------------------------------------------ GRÁFICOS -----
 def grafico_vig(df, par, lado, ts, precio, minutos=None, k=None, cierre=None, res=None,
-                estrategia="RSI2"):
+                estrategia="RSI2", nivel=None):
     """Gráfico de una operación de vigilancia RSI2 (velas de 5 min).
     Al abrir: velas, EMA200, RSI(2) y la entrada. Al cerrar: también el cierre y el resultado."""
     import io
@@ -167,6 +209,9 @@ def grafico_vig(df, par, lado, ts, precio, minutos=None, k=None, cierre=None, re
         ax.add_patch(Rectangle((x - 0.31, min(o, c)), 0.62, abs(c - o) or (h - l) * 0.02 or 1e-9,
                                color=col, zorder=3))
     ax.plot(xs, v["ema_l"], color="#f59e0b", lw=1.3, label=f"EMA{EMA_LENTA}")
+    if nivel is not None:
+        ax.axhline(nivel, color="#8b5cf6", lw=1.4, ls="--",
+                   label="Soporte" if lado > 0 else "Resistencia")
 
     # La entrada es al cierre de la vela 0 (borde derecho); el vencimiento, al cierre de la vela k.
     ax.axvline(0.5, color=gris, lw=1, ls=":")
@@ -424,10 +469,11 @@ def separar_horario(v: pd.DataFrame):
 DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
 VARIABLES = {"hora": "hora", "dia": "día", "lado": "dirección", "rsi2": "fuerza RSI2",
              "adx": "ADX", "volatilidad": "volatilidad", "dist_ema": "distancia a EMA200",
-             "noticias": "hora de noticias", "par": "par"}
-COLUMNAS_APRENDIZAJE = ["fecha_utc", "estrategia", "par", "expiracion_min", "avisada", "motivo",
-                        "resultado", "hora", "dia", "lado", "rsi2", "adx", "vol_rel", "dist_ema",
-                        "noticias"]
+             "noticias": "hora de noticias", "tendencia": "tendencia", "par": "par"}
+DATOS_ENTRADA = ["hora", "dia", "lado", "rsi2", "adx", "vol_rel", "dist_ema", "noticias", "tendencia"]
+DATOS_SALIDA = ["que_paso", "a_favor_pips", "en_contra_pips"]      # qué hizo el precio después
+COLUMNAS_APRENDIZAJE = (["fecha_utc", "estrategia", "par", "expiracion_min", "avisada", "motivo",
+                         "resultado"] + DATOS_ENTRADA + DATOS_SALIDA)
 
 
 def es_hora_noticias(entrada: pd.Timestamp) -> bool:
@@ -443,16 +489,22 @@ def contexto(df, i, lado) -> dict:
     local = entrada.tz_convert("America/Bogota")
     atr = df["atr"].iat[i]
     mediana = df["atr"].iloc[max(0, i - 288):i + 1].median()     # ATR típico del último día
-    r2 = df["rsi2"].iat[i]
+    r2 = df["rsi2"].iloc[max(0, i - 1):i + 1]                   # vela de la señal y la anterior
+    sobre = df["Close"].iat[i] > df["ema_l"].iat[i]
+    t1h = df["tend_1h"].iat[i]
+    a_favor = (lado > 0 and sobre and t1h > 0) or (lado < 0 and not sobre and t1h < 0)
+    en_contra = (lado > 0 and not sobre and t1h < 0) or (lado < 0 and sobre and t1h > 0)
     return {
         "hora": int(local.hour),
         "dia": int(local.dayofweek),
         "lado": "CALL" if lado > 0 else "PUT",
-        "rsi2": float(r2 if lado > 0 else 100 - r2),   # distancia al extremo: 0 = lo más extremo
+        # distancia al extremo del RSI2 (0 = lo más extremo), mirando la vela de la señal y la anterior
+        "rsi2": float(r2.min() if lado > 0 else 100 - r2.max()),
         "adx": float(df["adx"].iat[i]),
         "vol_rel": float(atr / mediana) if mediana and mediana > 0 else np.nan,
         "dist_ema": float(abs(df["Close"].iat[i] - df["ema_l"].iat[i]) / atr) if atr > 0 else np.nan,
         "noticias": bool(es_hora_noticias(entrada)),
+        "tendencia": "a favor" if a_favor else ("en contra" if en_contra else "mixta"),
     }
 
 
@@ -475,7 +527,8 @@ def grupos(ctx: dict) -> dict:
         g["lado"] = ctx["lado"]
     v = _num(ctx.get("rsi2"))
     if v is not None:
-        g["rsi2"] = "muy extremo (<3)" if v < 3 else ("extremo (3-6)" if v < 6 else "justo (6-10)")
+        g["rsi2"] = ("muy extremo (<3)" if v < 3 else "extremo (3-6)" if v < 6 else
+                     "justo (6-10)" if v < 10 else "fuera del extremo (≥10)")
     v = _num(ctx.get("adx"))
     if v is not None:
         g["adx"] = "débil (<20)" if v < 20 else ("normal (20-30)" if v < 30 else "fuerte (>30)")
@@ -489,29 +542,98 @@ def grupos(ctx: dict) -> dict:
     n = ctx.get("noticias")
     if isinstance(n, (bool, np.bool_)) or str(n) in ("True", "False"):
         g["noticias"] = "sí" if str(n) == "True" else "no"
+    if ctx.get("tendencia") in ("a favor", "en contra", "mixta"):
+        g["tendencia"] = ctx["tendencia"]
     if ctx.get("par"):
         g["par"] = nombre_par(ctx["par"])
     return g
 
 
 def clave_de(estrategia, par, exp_min):
-    return f"RSI2 {par} {int(exp_min)}" if estrategia == "RSI2" else "LZ"
+    """Grupo de operaciones que se aprende junto. RSI2: por par y expiración. Lorentzian: todos
+    los pares juntos. Estrategias nuevas: todos los pares juntos, por expiración."""
+    if estrategia == "RSI2":
+        return f"RSI2 {par} {int(exp_min)}"
+    if estrategia in NUEVAS:
+        return f"{estrategia} {int(exp_min)}"
+    return "LZ"
 
 
 def nombre_clave(clave):
     if clave == "LZ":
         return "RSI2 + Lorentzian"
-    _, par, e = clave.split()
-    return f"RSI2 {nombre_par(par)} {e}m"
+    partes = clave.split()
+    if partes[0] in NUEVAS:
+        return f"{NUEVAS[partes[0]][1]} {partes[1]}m"
+    return f"RSI2 {nombre_par(partes[1])} {partes[2]}m"
 
 
-def guardar_aprendizaje(estrategia, par, exp_min, ts, ctx, avisada, motivo, res):
+def guardar_aprendizaje(estrategia, par, exp_min, ts, ctx, avisada, motivo, res, analisis=None):
     nuevo = not os.path.exists(ARCHIVO_APRENDIZAJE)
     fila = {"fecha_utc": f"{ts:%Y-%m-%d %H:%M}", "estrategia": estrategia, "par": par,
             "expiracion_min": int(exp_min), "avisada": bool(avisada), "motivo": motivo,
-            "resultado": res, **{k: ctx.get(k) for k in COLUMNAS_APRENDIZAJE[7:]}}
+            "resultado": res, **{k: ctx.get(k) for k in DATOS_ENTRADA},
+            **{k: (analisis or {}).get(k) for k in DATOS_SALIDA}}
     pd.DataFrame([fila], columns=COLUMNAS_APRENDIZAJE).to_csv(
         ARCHIVO_APRENDIZAJE, mode="a", header=nuevo, index=False)
+
+
+# ------------------------------------------------- QUÉ PASÓ EN LA OPERACIÓN --
+CONSEJOS = {
+    "Casi empate": "pérdidas por muy poco: es mala suerte más que un error de la señal",
+    "Vela brusca en contra": "posible noticia: conviene evitar las horas de noticias",
+    "Rompió el nivel": "el soporte/resistencia no aguantó: pedir niveles más tocados",
+    "Iba ganando y se dio vuelta": "llega a ir a favor: una expiración más corta podría servir",
+    "En contra desde el inicio": "entrada muy temprana: esperar una vela de confirmación",
+    "Fue contra la tendencia": "conviene filtrar las señales contra la tendencia de 1 h",
+    "Siguió en contra poco a poco": "el impulso continuó: el extremo del RSI2 no bastó",
+}
+
+
+def pip(par):
+    return 0.01 if par.endswith("JPY") else 0.0001
+
+
+def analizar_operacion(df, ie, k, lado, precio, par, nivel=None):
+    """Qué hizo el precio entre la entrada (cierre de la vela ie) y el vencimiento (cierre de k).
+    Devuelve dict con 'que_paso' (solo en pérdidas), cuánto llegó a ir a favor y en contra (pips)
+    y un texto corto para el mensaje."""
+    tramo = df.iloc[ie + 1:k + 1]
+    if tramo.empty:
+        return {"que_paso": "", "a_favor_pips": np.nan, "en_contra_pips": np.nan, "texto": ""}
+    atr = df["atr"].iat[ie] if df["atr"].iat[ie] > 0 else pip(par)
+    p = pip(par)
+    a_favor = float(((tramo["High"] - precio) if lado > 0 else (precio - tramo["Low"])).max())
+    en_contra = float(((precio - tramo["Low"]) if lado > 0 else (tramo["High"] - precio)).max())
+    final = float((df["Close"].iat[k] - precio) * lado)
+    primera = float((tramo["Close"].iat[0] - precio) * lado)
+    rangos = tramo["High"] - tramo["Low"]
+    jg = rangos.values.argmax()
+    brusca = (rangos.iat[jg] >= 2.5 * atr
+              and (tramo["Close"].iat[jg] - tramo["Open"].iat[jg]) * lado < 0)
+    rompio = nivel is not None and bool(((tramo["Close"] < nivel - SR_TOLERANCIA * atr).any()) if lado > 0
+                                        else ((tramo["Close"] > nivel + SR_TOLERANCIA * atr).any()))
+    ctx = contexto(df, ie, lado)
+    datos = {"a_favor_pips": round(max(a_favor, 0) / p, 1), "en_contra_pips": round(max(en_contra, 0) / p, 1)}
+    if final >= 0:
+        return {**datos, "que_paso": "", "texto": ""}
+    if abs(final) <= 0.1 * atr:
+        q = "Casi empate"
+    elif brusca:
+        q = "Vela brusca en contra"
+    elif rompio:
+        q = "Rompió el nivel"
+    elif a_favor >= 0.5 * atr:
+        q = "Iba ganando y se dio vuelta"
+    elif primera < 0 and a_favor < 0.2 * atr:
+        q = "En contra desde el inicio"
+    elif ctx["tendencia"] == "en contra":
+        q = "Fue contra la tendencia"
+    else:
+        q = "Siguió en contra poco a poco"
+    texto = (f"🔎 <b>Qué pasó:</b> {q.lower()} · llegó a ir +{datos['a_favor_pips']} pips a favor "
+             f"y -{datos['en_contra_pips']} en contra · perdió por {abs(final) / p:.1f} pips")
+    return {**datos, "que_paso": q, "texto": texto}
 
 
 def wilson(g, n, z=1.96):
@@ -551,11 +673,14 @@ def cargar_reales() -> pd.DataFrame:
     """Todas las operaciones reales de vigilancia (sin empates) con sus grupos en columnas g_*.
     Las de antes del aprendizaje solo tienen hora, día y dirección."""
     partes = []
-    for estrategia, archivo in (("RSI2", ARCHIVO_VIGILANCIA), ("LZ", ARCHIVO_VIG_LZ)):
+    for estrategia, archivo in (("RSI2", ARCHIVO_VIGILANCIA), ("LZ", ARCHIVO_VIG_LZ),
+                                (None, ARCHIVO_NUEVAS)):
         if os.path.exists(archivo):
             x = pd.read_csv(archivo)
-            x["estrategia"] = estrategia
-            partes.append(x)
+            if estrategia:                    # el archivo de las nuevas ya trae la columna
+                x["estrategia"] = estrategia
+            partes.append(x[["fecha_utc", "estrategia", "par", "expiracion_min", "direccion",
+                             "resultado"]])
     if not partes:
         return pd.DataFrame()
     v = pd.concat(partes, ignore_index=True)
@@ -565,7 +690,7 @@ def cargar_reales() -> pd.DataFrame:
     llave = ["estrategia", "par", "expiracion_min", "fecha_utc"]
     if os.path.exists(ARCHIVO_APRENDIZAJE):
         a = pd.read_csv(ARCHIVO_APRENDIZAJE).drop_duplicates(llave, keep="last")
-        a = a[llave + COLUMNAS_APRENDIZAJE[7:]].drop(columns=["lado"])
+        a = a.reindex(columns=llave + DATOS_ENTRADA).drop(columns=["lado"])
         v = v.merge(a, on=llave, how="left")
     entrada = pd.to_datetime(v["fecha_utc"], utc=True) + pd.Timedelta(minutes=MIN_VELA)
     local = entrada.dt.tz_convert("America/Bogota")
@@ -577,8 +702,8 @@ def cargar_reales() -> pd.DataFrame:
     v["clave"] = [clave_de(e, p, m) for e, p, m in zip(v["estrategia"], v["par"], v["expiracion_min"])]
     filas = []
     for r in v.to_dict("records"):
-        if r["estrategia"] != "LZ":
-            r = {**r, "par": None}            # el par solo se compara dentro del Lorentzian
+        if r["estrategia"] == "RSI2":
+            r = {**r, "par": None}            # en RSI2 cada par ya se aprende por separado
         filas.append(grupos(r))
     g = pd.DataFrame(filas, index=v.index).add_prefix("g_")
     return v.join(g)
@@ -634,7 +759,9 @@ def consultar(clave, ctx):
         return [], [], []
     g = grupos(ctx)
     sub = r[r["clave"] == clave]
-    sub = sub[[g.get(v) == gr for v, gr in zip(sub["variable"], sub["grupo"])]]
+    if sub.empty:                       # estrategia sin nada aprendido todavía
+        return [], [], []
+    sub = sub[np.array([g.get(v) == gr for v, gr in zip(sub["variable"], sub["grupo"])], dtype=bool)]
     malas = sub[sub["estado"] == "mala"].to_dict("records")
     buenas = sub[sub["estado"] == "buena"].to_dict("records")
     pistas = sub[sub["n"] >= 5].sort_values("peso", ascending=False).head(2).to_dict("records")
@@ -656,9 +783,10 @@ def texto_aprendizaje(clave, ctx):
     return ("\n🧠 <b>Casos parecidos</b>\n" + "\n".join(lineas) + "\n") if lineas else ""
 
 
-def decidir_aviso(clave, ts, ctx):
-    """(avisar, motivo). Motivo: '' si se avisa, 'horario' o 'aprendizaje' si se mide en silencio."""
-    if not en_horas_buenas(ts):
+def decidir_aviso(clave, ts, ctx, usar_horario=True):
+    """(avisar, motivo). Motivo: '' si se avisa, 'horario' o 'aprendizaje' si se mide en silencio.
+    Las estrategias nuevas usan usar_horario=False: avisan en todo el horario del bot."""
+    if usar_horario and not en_horas_buenas(ts):
         return False, "horario"
     if APRENDIZAJE:
         malas, _, _ = consultar(clave, ctx)
@@ -708,9 +836,19 @@ def resumen_aprendizaje():
                     top = g[var].value_counts()
                     comunes.append((top.iloc[0] / len(perd), f"{VARIABLES[var]} {top.index[0]} "
                                                              f"({top.iloc[0]} de {len(perd)})"))
+            for var in ("tendencia",):
+                if var in g and g[var].notna().any():
+                    top = g[var].value_counts()
+                    comunes.append((top.iloc[0] / len(perd), f"{VARIABLES[var]} {top.index[0]} "
+                                                             f"({top.iloc[0]} de {len(perd)})"))
             comunes.sort(reverse=True)
-            lineas.append(f"Pérdidas de hoy ({len(perd)}), lo más repetido: "
+            lineas.append(f"Pérdidas de hoy ({len(perd)}), lo más repetido al entrar: "
                           + ", ".join(t for _, t in comunes[:2]))
+            if "que_paso" in perd and perd["que_paso"].notna().any():
+                qp = perd["que_paso"].dropna().value_counts()
+                lineas.append("Qué pasó en esas pérdidas: " + ", ".join(
+                    f"{q.lower()} ({n})" for q, n in qp.head(3).items()))
+                lineas.append(f"💡 Lo que más pasó → {CONSEJOS.get(qp.index[0], '')}")
         silencio = int((a["motivo"] == "aprendizaje").sum())
         if silencio:
             lineas.append(f"Señales no avisadas hoy por lo aprendido: {silencio}")
@@ -727,6 +865,19 @@ def resumen_aprendizaje():
         for f in obs.head(3).to_dict("records"):
             lineas.append(f"• {nombre_clave(f['clave'])} · {VARIABLES[f['variable']]} {f['grupo']}: "
                           f"real {txt_pct(f['g'], f['n'])}{txt_hist(f)}")
+    # Qué pasó en TODAS las pérdidas desde que se guarda (no solo hoy), por estrategia
+    if os.path.exists(ARCHIVO_APRENDIZAJE):
+        t = pd.read_csv(ARCHIVO_APRENDIZAJE)
+        t = t[(t["resultado"] == "PERDIDA") & t["que_paso"].notna()] if "que_paso" in t else t.iloc[0:0]
+        if len(t) >= 5:
+            lineas.append("📚 Qué pasó en las pérdidas (acumulado):")
+            for estr, x in t.groupby("estrategia"):
+                qp = x["que_paso"].value_counts()
+                nombre = NUEVAS[estr][1] if estr in NUEVAS else (
+                    "RSI2 + Lorentzian" if estr == "LZ" else "RSI2")
+                lineas.append(f"• {nombre}: " + ", ".join(
+                    f"{q.lower()} {100 * n / len(x):.0f} %" for q, n in qp.head(2).items())
+                    + f" (de {len(x)})")
     return "\n".join(lineas)
 
 
@@ -788,7 +939,10 @@ def mensaje_ranking(tabla):
             f"Solo envío señales con ✅ (≥{MIN_WINRATE:.0f}% y ≥{MIN_OPERACIONES} operaciones):\n\n"
             f"{lineas}\n\n"
             f"⏰ Vigilancias: solo aviso las entradas de {texto_horas()} (hora Colombia/Perú). "
-            f"Las demás horas se miden en silencio.")
+            f"Las demás horas se miden en silencio."
+            + (f"\n🆕 Estrategias nuevas ({', '.join(NUEVAS[x][1] for x in NUEVAS_ACTIVAS)}): "
+               f"todo el horario, 7 pares, "
+               f"{' y '.join(str(e * MIN_VELA) for e in NUEVAS_EXP_VELAS)} min." if NUEVAS_ACTIVAS else ""))
 
 
 # ------------------------------------------------------------- BUCLE -------
@@ -902,9 +1056,11 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
                 res = guardar_vig_lz(par, vlado, vprecio, cierre, vts)
                 ctx = CONTEXTOS.pop(("LZ", par, vts), None) or {
                     **contexto(df, df.index.get_loc(vts), vlado), "par": par}
+                an = {"texto": ""}
                 try:
+                    an = analizar_operacion(df, df.index.get_loc(vts), k, vlado, vprecio, par)
                     guardar_aprendizaje("LZ", par, LZ_EXP_VELAS * MIN_VELA, vts, ctx, avisar,
-                                        motivo, res)
+                                        motivo, res, an)
                 except Exception as e:  # noqa: BLE001
                     log.warning("No se pudo guardar el aprendizaje: %s", e)
                 if avisar:                       # las no avisadas solo se guardan
@@ -914,7 +1070,8 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
                         f"{LZ_EXP_VELAS * MIN_VELA} min\n"
                         f"💵 Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}\n"
                         f"📊 Asertividad real: {txt_pct(*real_vig_lz())} (todos los pares)\n"
-                        f"⏰ En horario bueno: {txt_pct(*real_horario(ARCHIVO_VIG_LZ))}",
+                        f"⏰ En horario bueno: {txt_pct(*real_horario(ARCHIVO_VIG_LZ))}"
+                        + (f"\n{an['texto']}" if an.get("texto") else ""),
                         df, par=par, lado=vlado, ts=vts, precio=vprecio,
                         minutos=LZ_EXP_VELAS * MIN_VELA, k=k, cierre=cierre, res=res,
                         estrategia="RSI2 + Lorentzian")
@@ -959,6 +1116,205 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
         df, par=par, lado=lado, ts=ts, precio=precio, estrategia="RSI2 + Lorentzian")
 
 
+# ------------------------------------------------- ESTRATEGIAS NUEVAS (RSI2 +)
+def senal_sr(df, i, altos, bajos):
+    """RSI2 < 10 tocando un soporte (CALL) o RSI2 > 90 tocando una resistencia (PUT).
+    Los niveles son pivotes ya confirmados del último día, de un tramo anterior a la vela actual."""
+    r2, atr = df["rsi2"].iat[i], df["atr"].iat[i]
+    if not atr > 0 or np.isnan(r2):
+        return None
+    tol = SR_TOLERANCIA * atr
+    desde, hasta = i - SR_VENTANA, i - PIVOTE_DER - 3
+    l, h, c = df["Low"].iat[i], df["High"].iat[i], df["Close"].iat[i]
+    def elegir(niveles, ref, toca):
+        cand = [(x, sum(abs(y - x) <= tol for y in niveles)) for x in niveles if toca(x)]
+        cand = [(x, t) for x, t in cand if t >= SR_TOQUES_MIN]          # solo niveles ya probados
+        return min(cand, key=lambda xt: abs(ref - xt[0])) if cand else None
+
+    if r2 < 10:
+        niveles = [df["Low"].iat[j] for j in bajos if desde <= j <= hasta]
+        e = elegir(niveles, l, lambda s: l <= s + tol and c >= s - tol)   # tocó y no cerró debajo
+        if e:
+            return dict(lado=1, nivel=e[0], toques=e[1])
+    if r2 > 90:
+        niveles = [df["High"].iat[j] for j in altos if desde <= j <= hasta]
+        e = elegir(niveles, h, lambda r: h >= r - tol and c <= r + tol)   # tocó y no cerró encima
+        if e:
+            return dict(lado=-1, nivel=e[0], toques=e[1])
+    return None
+
+
+def senal_env(df, i):
+    """RSI2 extremo en la vela anterior y una vela envolvente en sentido contrario."""
+    if i < 1:
+        return None
+    o1, c1, r1 = df["Open"].iat[i - 1], df["Close"].iat[i - 1], df["rsi2"].iat[i - 1]
+    o, c = df["Open"].iat[i], df["Close"].iat[i]
+    if r1 < 10 and c1 < o1 and c > o and c >= o1 and o <= c1 and (c - o) > (o1 - c1):
+        return dict(lado=1, rsi_prev=r1)
+    if r1 > 90 and c1 > o1 and c < o and c <= o1 and o >= c1 and (o - c) > (c1 - o1):
+        return dict(lado=-1, rsi_prev=r1)
+    return None
+
+
+def senal_div(df, i):
+    """Divergencia: mínimo más bajo con RSI2 más alto (CALL) o máximo más alto con RSI2 más bajo
+    (PUT). El extremo anterior está entre 5 y 40 velas atrás y entre los dos el RSI2 cruzó 50."""
+    a, b = DIV_VENTANA
+    if i < b + 2:
+        return None
+    r2, lo, hi = df["rsi2"].values, df["Low"].values, df["High"].values
+    ventana = range(i - b, i - a + 1)
+    if r2[i] < 10 and lo[i] <= lo[i - 2:i].min():
+        cand = [k for k in ventana if r2[k] < 20]
+        if cand:
+            k = min(cand, key=lambda j: lo[j])
+            if lo[i] < lo[k] and r2[i] > r2[k] + 2 and r2[k + 1:i].max() > 50:
+                return dict(lado=1, previo=k, p_i=lo[i], p_k=lo[k], r_i=r2[i], r_k=r2[k])
+    if r2[i] > 90 and hi[i] >= hi[i - 2:i].max():
+        cand = [k for k in ventana if r2[k] > 80]
+        if cand:
+            k = max(cand, key=lambda j: hi[j])
+            if hi[i] > hi[k] and r2[i] < r2[k] - 2 and r2[k + 1:i].min() < 50:
+                return dict(lado=-1, previo=k, p_i=hi[i], p_k=hi[k], r_i=r2[i], r_k=r2[k])
+    return None
+
+
+def detalle_nueva(estr, s, par, i):
+    sube = s["lado"] > 0
+    if estr == "SR":
+        return (f"{'Soporte' if sube else 'Resistencia'} en {fmt(par, s['nivel'])} "
+                f"(nivel tocado {s['toques']} veces en el último día)")
+    if estr == "ENV":
+        return f"Vela envolvente {'alcista' if sube else 'bajista'} después de RSI2 {s['rsi_prev']:.0f}"
+    hace = (i - s["previo"]) * MIN_VELA
+    return (f"Divergencia {'alcista' if sube else 'bajista'}: "
+            f"{'mínimo más bajo' if sube else 'máximo más alto'} ({fmt(par, s['p_i'])} vs "
+            f"{fmt(par, s['p_k'])} hace {hace} min) pero RSI2 {s['r_i']:.0f} vs {s['r_k']:.0f}")
+
+
+def guardar_nueva(estr, par, exp, lado, precio, cierre, ts):
+    nuevo = not os.path.exists(ARCHIVO_NUEVAS)
+    dif = (cierre - precio) * lado
+    res = "EMPATE" if dif == 0 else ("GANADA" if dif > 0 else "PERDIDA")
+    with open(ARCHIVO_NUEVAS, "a", encoding="utf-8") as f:
+        if nuevo:
+            f.write("fecha_utc,estrategia,par,expiracion_min,direccion,entrada,cierre,resultado\n")
+        f.write(f"{ts:%Y-%m-%d %H:%M},{estr},{par},{exp * MIN_VELA},{'CALL' if lado > 0 else 'PUT'},"
+                f"{precio},{cierre},{res}\n")
+    return res
+
+
+def real_nueva(estr, exp_min, par=None):
+    """Asertividad real de una estrategia nueva: (ganadas, total) sin empates."""
+    if not os.path.exists(ARCHIVO_NUEVAS):
+        return 0, 0
+    v = pd.read_csv(ARCHIVO_NUEVAS)
+    v = v[(v["estrategia"] == estr) & (v["expiracion_min"] == exp_min) & (v["resultado"] != "EMPATE")]
+    if par:
+        v = v[v["par"] == par]
+    return int((v["resultado"] == "GANADA").sum()), len(v)
+
+
+def resumen_nuevas():
+    if not NUEVAS_ACTIVAS:
+        return ""
+    lineas = ["\n\n🆕 <b>Estrategias nuevas</b> (todo el horario, 7 pares, meta ≥56 %):"]
+    v = pd.read_csv(ARCHIVO_NUEVAS) if os.path.exists(ARCHIVO_NUEVAS) else pd.DataFrame(
+        columns=["fecha_utc", "estrategia", "expiracion_min", "resultado"])
+    v = v[v["resultado"] != "EMPATE"]
+    hoy = pd.Timestamp.now(tz="UTC").normalize()
+    for estr in NUEVAS_ACTIVAS:
+        emoji, nombre = NUEVAS[estr]
+        partes = []
+        for e in NUEVAS_EXP_VELAS:
+            x = v[(v["estrategia"] == estr) & (v["expiracion_min"] == e * MIN_VELA)]
+            xh = x[pd.to_datetime(x["fecha_utc"], utc=True) >= hoy]
+            gan = lambda y: int((y["resultado"] == "GANADA").sum())  # noqa: E731
+            partes.append(f"{e * MIN_VELA}m hoy {gan(xh)}/{len(xh)} · total {txt_pct(gan(x), len(x))}")
+        lineas.append(f"{emoji} {nombre}\n   " + " | ".join(partes))
+    return "\n".join(lineas)
+
+
+def vigilar_nuevas(par, df, i, ts, abiertas, vistas, altos, bajos):
+    """Revisa resultados de las estrategias nuevas abiertas y busca señales nuevas, por separado."""
+    for (estr, p, e), (vts, lado, precio, avisar, motivo, s) in list(abiertas.items()):
+        if p != par:
+            continue
+        if vts not in df.index:
+            del abiertas[(estr, p, e)]
+            CONTEXTOS.pop((estr, par, vts), None)
+            continue
+        ie = df.index.get_loc(vts)
+        k = ie + e
+        if k > i:
+            continue
+        cierre = df["Close"].iat[k]
+        res = guardar_nueva(estr, par, e, lado, precio, cierre, vts)
+        ctx = CONTEXTOS.get((estr, par, vts)) or {**contexto(df, ie, lado), "par": par}
+        an = {"texto": ""}
+        try:
+            an = analizar_operacion(df, ie, k, lado, precio, par, s.get("nivel"))
+            guardar_aprendizaje(estr, par, e * MIN_VELA, vts, ctx, avisar, motivo, res, an)
+        except Exception as ex:  # noqa: BLE001
+            log.warning("No se pudo guardar el aprendizaje (%s): %s", estr, ex)
+        del abiertas[(estr, p, e)]
+        if not any(x == estr and y == par and t[0] == vts for (x, y, _), t in abiertas.items()):
+            CONTEXTOS.pop((estr, par, vts), None)
+        if avisar:                                  # las no avisadas solo se guardan
+            emoji, nombre = NUEVAS[estr]
+            icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
+            enviar_con_grafico(
+                f"{emoji} {icono} <b>{res}</b> · {nombre} · {nombre_par(par)} · {e * MIN_VELA} min\n"
+                f"💵 Entrada {fmt(par, precio)} → cierre {fmt(par, cierre)}\n"
+                f"📊 Asertividad real: {txt_pct(*real_nueva(estr, e * MIN_VELA))} (todos los pares)"
+                + (f"\n{an['texto']}" if an.get("texto") else ""),
+                df, par=par, lado=lado, ts=vts, precio=precio, minutos=e * MIN_VELA, k=k,
+                cierre=cierre, res=res, estrategia=nombre, nivel=s.get("nivel"))
+
+    if (par, ts) in vistas or not en_horario(ts):
+        return
+    vistas.add((par, ts))
+    detectores = {"SR": lambda: senal_sr(df, i, altos, bajos),
+                  "ENV": lambda: senal_env(df, i),
+                  "DIV": lambda: senal_div(df, i)}
+    for estr in NUEVAS_ACTIVAS:
+        libres = [e for e in NUEVAS_EXP_VELAS if (estr, par, e) not in abiertas]
+        if not libres:
+            continue
+        s = detectores[estr]()
+        if not s:
+            continue
+        lado, precio = s["lado"], df["Close"].iat[i]
+        ctx = {**contexto(df, i, lado), "par": par}
+        CONTEXTOS[(estr, par, ts)] = ctx
+        avisos = {e: decidir_aviso(clave_de(estr, par, e * MIN_VELA), ts, ctx, usar_horario=False)
+                  for e in libres}
+        for e in libres:
+            abiertas[(estr, par, e)] = (ts, lado, precio, *avisos[e], s)
+        avisar = [e for e in libres if avisos[e][0]]
+        if not avisar:
+            log.info("%s %s no se avisa (condición mala aprendida): se mide en silencio.", estr, par)
+            continue
+        emoji, nombre = NUEVAS[estr]
+        hora_col = (ts + pd.Timedelta(minutes=MIN_VELA)).tz_convert("America/Bogota")
+        sentido = "arriba ⬆️" if lado > 0 else "abajo ⬇️"
+        pcts = [f"• {e * MIN_VELA} min: {txt_pct(*real_nueva(estr, e * MIN_VELA))} todos los pares · "
+                f"{txt_pct(*real_nueva(estr, e * MIN_VELA, par))} en {nombre_par(par)}" for e in avisar]
+        enviar_con_grafico(
+            f"{emoji} <b>{nombre} · {nombre_par(par)} - {sentido}</b>\n"
+            f"Zona horaria UTC -5\n\n"
+            f"⌛ EXPIRACIÓN: {' y '.join(str(e * MIN_VELA) for e in avisar)} minutos\n"
+            f"⏱️ ENTRADA: {hora_col:%H:%M}\n"
+            f"💵 Precio: {fmt(par, precio)}\n"
+            f"📌 {detalle_nueva(estr, s, par, i)}\n"
+            f"📈 Tendencia: {ctx['tendencia']}\n\n"
+            f"📊 <b>ASERTIVIDAD REAL</b>\n" + "\n".join(pcts) + "\n"
+            + texto_aprendizaje(clave_de(estr, par, avisar[0] * MIN_VELA), ctx) + "\n"
+            "🔍 Estrategia nueva en vigilancia: solo observar, NO operar.",
+            df, par=par, lado=lado, ts=ts, precio=precio, estrategia=nombre, nivel=s.get("nivel"))
+
+
 def resumen_horario():
     """Cómo va el filtro de horario: dentro vs fuera de las horas buenas (sin empates)."""
     if not HORAS_BUENAS:
@@ -986,7 +1342,7 @@ def resumen_horario():
 def mensaje_resumen():
     if not os.path.exists(ARCHIVO_RESULTADOS):
         return ("📋 <b>Resumen del día</b>\nHoy no hubo señales que pasaran el filtro."
-                + resumen_horario() + resumen_vigilancia() + resumen_vig_lz()
+                + resumen_horario() + resumen_vigilancia() + resumen_vig_lz() + resumen_nuevas()
                 + resumen_aprendizaje())
     r = pd.read_csv(ARCHIVO_RESULTADOS)
     r = r[r["resultado"] != "EMPATE"]
@@ -1008,7 +1364,7 @@ def mensaje_resumen():
             lambda v: f"{(v == 'GANADA').sum()}/{len(v)}")
         partes.append("\nPor par hoy: " + ", ".join(f"{k} {v}" for k, v in por_par.items()))
     return ("📋 <b>Resumen del día</b>\n" + "\n".join(partes) + resumen_horario()
-            + resumen_vigilancia() + resumen_vig_lz() + resumen_aprendizaje())
+            + resumen_vigilancia() + resumen_vig_lz() + resumen_nuevas() + resumen_aprendizaje())
 
 
 def backtest_vig(df, expiraciones):
@@ -1082,6 +1438,8 @@ def main():
     vig_vistas = set()
     lz_abiertas = {}    # par -> (ts, lado, precio, avisar, motivo) de la vigilancia D
     lz_vistas = set()
+    nuevas_abiertas = {}   # (estrategia, par, exp) -> (ts, lado, precio, avisar, motivo, señal)
+    nuevas_vistas = set()
     actualizar_aprendizaje()
 
     while time.time() < fin:
@@ -1143,8 +1501,11 @@ def main():
                     cierre = df["Close"].iat[k]
                     res = guardar_vigilancia(par, ve, vlado, vprecio, cierre, vts)
                     ctx = CONTEXTOS.get(("RSI2", par, vts)) or contexto(df, df.index.get_loc(vts), vlado)
+                    an = {"texto": ""}
                     try:
-                        guardar_aprendizaje("RSI2", par, ve * MIN_VELA, vts, ctx, vavisar, vmotivo, res)
+                        an = analizar_operacion(df, df.index.get_loc(vts), k, vlado, vprecio, par)
+                        guardar_aprendizaje("RSI2", par, ve * MIN_VELA, vts, ctx, vavisar, vmotivo,
+                                            res, an)
                     except Exception as e:  # noqa: BLE001
                         log.warning("No se pudo guardar el aprendizaje: %s", e)
                     if not any(p == par and t[0] == vts for (p, _), t in vig_abiertas.items()
@@ -1157,7 +1518,8 @@ def main():
                             f"💵 Entrada {fmt(par, vprecio)} → cierre {fmt(par, cierre)}\n"
                             f"📊 Asertividad real: {txt_pct(*real_vig(par, ve))}\n"
                             f"⏰ En horario bueno: "
-                            f"{txt_pct(*real_horario(ARCHIVO_VIGILANCIA, par, ve * MIN_VELA))}",
+                            f"{txt_pct(*real_horario(ARCHIVO_VIGILANCIA, par, ve * MIN_VELA))}"
+                            + (f"\n{an['texto']}" if an.get("texto") else ""),
                             df, par=par, lado=vlado, ts=vts, precio=vprecio,
                             minutos=ve * MIN_VELA, k=k, cierre=cierre, res=res)
                     del vig_abiertas[(vp, ve)]
@@ -1204,6 +1566,14 @@ def main():
                     vigilar_lz(par, df, i, ts, lz_abiertas, lz_vistas)
                 except Exception as e:  # noqa: BLE001
                     log.warning("Vigilancia Lorentzian %s: %s", par, e)
+
+            # ---- Estrategias nuevas: RSI2 + S/R, RSI2 + envolvente, RSI2 + divergencia
+            if NUEVAS_ACTIVAS:
+                try:
+                    altos_n, bajos_n = pivotes(df)
+                    vigilar_nuevas(par, df, i, ts, nuevas_abiertas, nuevas_vistas, altos_n, bajos_n)
+                except Exception as e:  # noqa: BLE001
+                    log.warning("Estrategias nuevas %s: %s", par, e)
 
             if (par, ts) in ya_vistas or not en_horario(ts):
                 continue
