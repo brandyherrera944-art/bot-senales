@@ -1,0 +1,62 @@
+
+Welcome to Gradle 8.7!
+
+Here are the highlights of this release:
+ - Compiling and testing with Java 22
+ - Cacheable Groovy script compilation
+ - New methods in lazy collection properties
+
+For more details see https://docs.gradle.org/8.7/release-notes.html
+
+To honour the JVM settings for this build a single-use Daemon process will be forked. For more on this, please refer to https://docs.gradle.org/8.7/userguide/gradle_daemon.html#sec:disabling_the_daemon in the Gradle documentation.
+Daemon will be stopped at the end of the build 
+> Task :movil:preBuild UP-TO-DATE
+> Task :movil:preReleaseBuild UP-TO-DATE
+> Task :movil:mergeReleaseJniLibFolders
+> Task :movil:mergeReleaseNativeLibs NO-SOURCE
+> Task :movil:stripReleaseDebugSymbols NO-SOURCE
+> Task :movil:extractReleaseNativeSymbolTables NO-SOURCE
+> Task :movil:mergeReleaseNativeDebugMetadata NO-SOURCE
+> Task :movil:checkReleaseDuplicateClasses
+> Task :movil:javaPreCompileRelease
+> Task :movil:checkReleaseAarMetadata
+> Task :movil:generateReleaseResValues
+> Task :movil:mapReleaseSourceSetPaths
+> Task :movil:generateReleaseResources
+> Task :movil:packageReleaseResources
+> Task :movil:mergeReleaseResources
+> Task :movil:createReleaseCompatibleScreenManifests
+> Task :movil:extractDeepLinksRelease
+> Task :movil:parseReleaseLocalResources
+> Task :movil:processReleaseMainManifest
+> Task :movil:processReleaseManifest
+> Task :movil:desugarReleaseFileDependencies
+> Task :movil:processReleaseManifestForPackage
+> Task :movil:mergeReleaseArtProfile
+> Task :movil:mergeExtDexRelease
+> Task :movil:mergeReleaseShaders
+> Task :movil:compileReleaseShaders NO-SOURCE
+> Task :movil:generateReleaseAssets UP-TO-DATE
+> Task :movil:mergeReleaseAssets
+> Task :movil:processReleaseJavaRes NO-SOURCE
+> Task :movil:compressReleaseAssets
+> Task :movil:collectReleaseDependencies
+> Task :movil:mergeReleaseJavaResource
+> Task :movil:processReleaseResources
+> Task :movil:sdkReleaseDependencyData
+> Task :movil:compileReleaseJavaWithJavac
+> Task :movil:dexBuilderRelease
+> Task :movil:mergeReleaseGlobalSynthetics
+> Task :movil:validateSigningRelease
+> Task :movil:writeReleaseAppMetadata
+> Task :movil:writeReleaseSigningConfigVersions
+> Task :movil:optimizeReleaseResources
+> Task :movil:mergeDexRelease
+> Task :movil:compileReleaseArtProfile
+> Task :movil:packageRelease
+> Task :movil:createReleaseApkListingFileRedirect
+> Task :movil:assembleRelease
+gradle/actions: Writing build results to /home/runner/work/_temp/.gradle-actions/build-results/__run_2-1794633382830.json
+
+BUILD SUCCESSFUL in 28s
+35 actionable tasks: 35 executed
