@@ -96,6 +96,16 @@ LOTE_CORTES = [(6, 0), (10, 0), (14, 0), (15, 40)]
 LOTE_MARGEN_MIN = 10
 ARCHIVO_LOTE = "lote_resultados.txt"
 
+# App Android "Señales Brandy": el bot publica cada señal (avisada o no) y su resultado en
+# senales_app.json, en la rama "app-senales" del repositorio (aparte, para no llenar el historial).
+# Se sube como máximo una vez por ciclo de 5 min con la API de GitHub. La app lo lee y filtra.
+APP_FEED = os.getenv("APP_FEED", "1") == "1"
+APP_RAMA = "app-senales"
+APP_ARCHIVO = "senales_app.json"
+APP_MAX_SENALES = 300
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "").strip()
+GITHUB_REPO = os.getenv("GITHUB_REPOSITORY", "brandyherrera944-art/bot-senales")
+
 # Enlaces a plataformas que van en cada señal (páginas oficiales, elegidas por Brandy).
 # Quotex usa varios dominios; qxbroker.com es el que reseñas citan para Latinoamérica.
 LINKS_PLATAFORMAS = os.getenv("LINKS_PLATAFORMAS", "1") == "1"
@@ -1104,6 +1114,7 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
                                         motivo, res, an)
                 except Exception as e:  # noqa: BLE001
                     log.warning("No se pudo guardar el aprendizaje: %s", e)
+                feed_resultado("LZ", par, vts, LZ_EXP_VELAS * MIN_VELA, res, an.get("que_paso"))
                 if avisar:                       # las no avisadas solo se guardan
                     icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
                     enviar_con_grafico(
@@ -1135,6 +1146,9 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
     CONTEXTOS[("LZ", par, ts)] = ctx
     avisar, motivo = decidir_aviso("LZ", ts, ctx)
     abiertas[par] = (ts, lado, precio, avisar, motivo)
+    feed_agregar("LZ", par, ts, lado, precio, [LZ_EXP_VELAS * MIN_VELA],
+                 detalle="RSI2 extremo y el Lorentzian con su kernel en la misma dirección",
+                 tendencia=ctx["tendencia"], avisada=avisar, motivo=motivo)
     if not avisar:
         log.info("Lorentzian %s no se avisa (%s, %s h): se mide en silencio.",
                  par, motivo, hora_entrada(ts))
@@ -1299,6 +1313,7 @@ def vigilar_nuevas(par, df, i, ts, abiertas, vistas, altos, bajos):
             guardar_aprendizaje(estr, par, e * MIN_VELA, vts, ctx, avisar, motivo, res, an)
         except Exception as ex:  # noqa: BLE001
             log.warning("No se pudo guardar el aprendizaje (%s): %s", estr, ex)
+        feed_resultado(estr, par, vts, e * MIN_VELA, res, an.get("que_paso"))
         del abiertas[(estr, p, e)]
         if not any(x == estr and y == par and t[0] == vts for (x, y, _), t in abiertas.items()):
             CONTEXTOS.pop((estr, par, vts), None)
@@ -1334,6 +1349,9 @@ def vigilar_nuevas(par, df, i, ts, abiertas, vistas, altos, bajos):
         for e in libres:
             abiertas[(estr, par, e)] = (ts, lado, precio, *avisos[e], s)
         avisar = [e for e in libres if avisos[e][0]]
+        feed_agregar(estr, par, ts, lado, precio, [e * MIN_VELA for e in libres],
+                     detalle=detalle_nueva(estr, s, par, i), tendencia=ctx["tendencia"],
+                     avisada=bool(avisar), motivo="" if avisar else "aprendizaje")
         if not avisar:
             log.info("%s %s no se avisa (condición mala aprendida): se mide en silencio.", estr, par)
             continue
@@ -1452,6 +1470,150 @@ def revisar_lote(ahora=None):
         enviar_largo(texto)
     with open(ARCHIVO_LOTE, "w", encoding="utf-8") as f:
         f.write(corte.isoformat())
+
+
+# ------------------------------------------------------- APP ANDROID (feed) --
+FEED = {"senales": [], "sucio": False, "sha": None, "cargado": False}
+NOMBRES_ESTR = {"RSI2": ("🔍", "RSI2"), "LZ": ("🧠", "RSI2 + Lorentzian"),
+                "PRINCIPAL": ("📊", "Bot principal")}
+
+
+def nombre_estrategia(estr):
+    return NUEVAS.get(estr) or NOMBRES_ESTR.get(estr, ("•", estr))
+
+
+def id_senal(estr, par, ts):
+    return f"{estr}-{par}-{ts:%Y%m%d%H%M}"
+
+
+def _gh(metodo, ruta, **kw):
+    """Llamada a la API de GitHub del propio repositorio (con el token del workflow)."""
+    h = {"Authorization": f"Bearer {GITHUB_TOKEN}", "Accept": "application/vnd.github+json",
+         "X-GitHub-Api-Version": "2022-11-28"}
+    return requests.request(metodo, f"https://api.github.com/repos/{GITHUB_REPO}{ruta}",
+                            headers=h, timeout=20, **kw)
+
+
+def _crear_rama_app():
+    r = _gh("GET", f"/git/ref/heads/{APP_RAMA}")
+    if r.status_code == 404:
+        base = _gh("GET", "/git/ref/heads/main").json()["object"]["sha"]
+        _gh("POST", "/git/refs", json={"ref": f"refs/heads/{APP_RAMA}", "sha": base})
+        log.info("App: creada la rama %s.", APP_RAMA)
+
+
+def feed_cargar():
+    """Trae senales_app.json desde GitHub para conservar el historial entre turnos del bot."""
+    FEED["cargado"] = True
+    if not (APP_FEED and GITHUB_TOKEN):
+        return
+    import base64
+    import json
+    try:
+        r = _gh("GET", f"/contents/{APP_ARCHIVO}", params={"ref": APP_RAMA})
+        if r.status_code == 200:
+            d = r.json()
+            FEED["sha"] = d["sha"]
+            previas = json.loads(base64.b64decode(d["content"]).decode("utf-8")).get("senales", [])
+            nuevas_ids = {s["id"] for s in FEED["senales"]}
+            FEED["senales"] = [s for s in previas if s["id"] not in nuevas_ids] + FEED["senales"]
+        elif r.status_code == 404:
+            _crear_rama_app()
+        else:
+            log.warning("App: GitHub respondió %s al leer: %s", r.status_code, r.text[:200])
+    except Exception as e:  # noqa: BLE001
+        log.warning("App: no se pudo leer el archivo de señales: %s", e)
+
+
+def feed_agregar(estr, par, ts, lado, precio, exps_min, detalle="", tendencia="",
+                 avisada=True, motivo=""):
+    """Agrega una señal al archivo de la app (se sube al final del ciclo)."""
+    if not APP_FEED:
+        return
+    sid = id_senal(estr, par, ts)
+    previa = next((s for s in FEED["senales"] if s["id"] == sid), None)
+    if previa:                                   # misma señal con otra expiración
+        previa["expiraciones"] = sorted(set(previa["expiraciones"]) | {int(e) for e in exps_min})
+        previa["avisada"] = bool(previa["avisada"] or avisada)
+        FEED["sucio"] = True
+        return
+    entrada = ts + pd.Timedelta(minutes=MIN_VELA)
+    local = entrada.tz_convert("America/Bogota")
+    emoji, nombre = nombre_estrategia(estr)
+    FEED["senales"].append({
+        "id": sid, "estrategia": estr, "nombre": nombre, "emoji": emoji, "par": par,
+        "lado": "CALL" if lado > 0 else "PUT", "entrada_utc": entrada.isoformat(),
+        "fecha": f"{local:%Y-%m-%d}", "hora": f"{local:%H:%M}", "precio": fmt(par, float(precio)),
+        "expiraciones": sorted({int(e) for e in exps_min}), "detalle": detalle,
+        "tendencia": tendencia, "avisada": bool(avisada), "motivo": motivo,
+        "resultados": {}, "que_paso": {},
+    })
+    FEED["senales"] = FEED["senales"][-APP_MAX_SENALES:]
+    FEED["sucio"] = True
+
+
+def feed_resultado(estr, par, ts, exp_min, res, que_paso=None):
+    if not APP_FEED:
+        return
+    sid = id_senal(estr, par, ts)
+    s = next((x for x in FEED["senales"] if x["id"] == sid), None)
+    if s is None:
+        return
+    s["resultados"][str(int(exp_min))] = res
+    if que_paso:
+        s["que_paso"][str(int(exp_min))] = que_paso
+    FEED["sucio"] = True
+
+
+def estadisticas_app():
+    """Asertividad real acumulada de cada estrategia, para la pantalla de estadísticas."""
+    filas = []
+    for par, exps in VIGILANCIA.items():
+        for e in exps:
+            g, n = real_vig(par, e)
+            filas.append({"estrategia": "RSI2", "detalle": f"{nombre_par(par)} {e * MIN_VELA}m", "g": g, "n": n})
+    if VIG_LZ:
+        g, n = real_vig_lz()
+        filas.append({"estrategia": "LZ", "detalle": f"{LZ_EXP_VELAS * MIN_VELA}m", "g": g, "n": n})
+    for estr in NUEVAS_ACTIVAS:
+        for e in NUEVAS_EXP_VELAS:
+            g, n = real_nueva(estr, e * MIN_VELA)
+            filas.append({"estrategia": estr, "detalle": f"{e * MIN_VELA}m", "g": g, "n": n})
+    for f in filas:
+        f["emoji"], f["nombre"] = nombre_estrategia(f["estrategia"])
+    return filas
+
+
+def feed_subir():
+    """Sube senales_app.json a la rama de la app si hubo cambios (máximo una vez por ciclo)."""
+    if not (APP_FEED and GITHUB_TOKEN and FEED["sucio"]):
+        return
+    if not FEED["cargado"]:
+        feed_cargar()
+    import base64
+    import json
+    ahora = pd.Timestamp.now(tz="UTC")
+    try:
+        datos = {"version": 1, "actualizado": ahora.isoformat(), "senales": FEED["senales"],
+                 "estadisticas": estadisticas_app()}
+        cuerpo = {"message": f"Señales {ahora:%Y-%m-%d %H:%M}", "branch": APP_RAMA,
+                  "content": base64.b64encode(json.dumps(datos, ensure_ascii=False).encode("utf-8")).decode()}
+        if FEED["sha"]:
+            cuerpo["sha"] = FEED["sha"]
+        r = _gh("PUT", f"/contents/{APP_ARCHIVO}", json=cuerpo)
+        if r.status_code in (200, 201):
+            FEED["sha"] = r.json()["content"]["sha"]
+            FEED["sucio"] = False
+        elif r.status_code == 404:
+            _crear_rama_app()                    # se reintenta en el próximo ciclo
+        elif r.status_code in (409, 422):        # el archivo cambió: se toma el sha nuevo
+            rr = _gh("GET", f"/contents/{APP_ARCHIVO}", params={"ref": APP_RAMA})
+            FEED["sha"] = rr.json().get("sha") if rr.status_code == 200 else None
+            log.warning("App: sha desactualizado, se reintenta en el próximo ciclo.")
+        else:
+            log.warning("App: GitHub respondió %s al subir: %s", r.status_code, r.text[:200])
+    except Exception as e:  # noqa: BLE001
+        log.warning("App: no se pudo subir el archivo de señales: %s", e)
 
 
 def resumen_horario():
@@ -1579,6 +1741,7 @@ def main():
     lz_vistas = set()
     nuevas_abiertas = {}   # (estrategia, par, exp) -> (ts, lado, precio, avisar, motivo, señal)
     nuevas_vistas = set()
+    feed_cargar()          # historial de la app Android
     actualizar_aprendizaje()
 
     while time.time() < fin:
@@ -1629,6 +1792,8 @@ def main():
                     enviar(f"{etiqueta} — {par} {s['dir']}\n"
                            f"Entrada {fmt(par, s['precio'])} → cierre {fmt(par, cierre)}")
                     guardar_resultado(par, s, cierre, gano, clave[1])
+                    feed_resultado("PRINCIPAL", par, clave[1], EXPIRACION_VELAS * MIN_VELA,
+                                   "EMPATE" if gano is None else ("GANADA" if gano else "PERDIDA"))
                     del enviadas[clave]
 
             # ---- Modo vigilancia (RSI2): verificar resultados y buscar nuevas señales
@@ -1647,6 +1812,7 @@ def main():
                                             res, an)
                     except Exception as e:  # noqa: BLE001
                         log.warning("No se pudo guardar el aprendizaje: %s", e)
+                    feed_resultado("RSI2", par, vts, ve * MIN_VELA, res, an.get("que_paso"))
                     if not any(p == par and t[0] == vts for (p, _), t in vig_abiertas.items()
                                if (p, _) != (vp, ve)):
                         CONTEXTOS.pop(("RSI2", par, vts), None)
@@ -1674,6 +1840,11 @@ def main():
                               for e in libres}
                     for e in libres:
                         vig_abiertas[(par, e)] = (ts, lado, precio, *avisos[e])
+                    algun = any(a for a, _ in avisos.values())
+                    feed_agregar("RSI2", par, ts, lado, precio, [e * MIN_VELA for e in libres],
+                                 detalle=f"RSI2 {df['rsi2'].iat[i]:.0f} a favor de la tendencia",
+                                 tendencia=ctx["tendencia"], avisada=algun,
+                                 motivo="" if algun else next(iter(avisos.values()))[1])
                     libres = [e for e in libres if avisos[e][0]]     # solo se avisan estas
                     if not libres:
                         log.info("RSI2 %s no se avisa (%s, %s h): se mide en silencio.", par,
@@ -1728,6 +1899,8 @@ def main():
             if aprobado(tabla[par][k]):
                 enviar(mensaje_senal(par, s, tabla[par][k], ts))
                 enviadas[(par, ts)] = s
+                feed_agregar("PRINCIPAL", par, ts, s["lado"], s["precio"],
+                             [EXPIRACION_VELAS * MIN_VELA], detalle=s["modo"], avisada=True)
             else:
                 log.info("Señal %s %s descartada (acierto %.1f%%)", par, s["modo"],
                          tabla[par][k]["winrate"])
@@ -1737,6 +1910,9 @@ def main():
             revisar_lote()
         except Exception as e:  # noqa: BLE001
             log.warning("No se pudo enviar el paquete de resultados: %s", e)
+        feed_subir()                     # archivo de la app Android (si hubo señales o resultados)
+
+    feed_subir()
 
 
 if __name__ == "__main__":
