@@ -86,6 +86,15 @@ ARCHIVO_NUEVAS = "estrategias_nuevas.csv"
 SR_VENTANA = 288              # niveles de los pivotes del último día (288 velas de 5 min)
 SR_TOLERANCIA = 0.3           # cuánto puede faltar para "tocar" el nivel, en ATR
 SR_TOQUES_MIN = int(os.getenv("SR_TOQUES_MIN", "2"))   # el nivel debe haberse tocado 2+ veces
+
+# Resultados de las estrategias nuevas: como son pruebas, llegan JUNTOS en un paquete cada 4 horas
+# (las señales sí llegan al momento). Paquetes a las 6:00, 10:00 y 14:00, y uno final a las 15:40
+# (hora Colombia/Perú), 10 min después de la hora para que alcancen a cerrar las últimas operaciones.
+# lote_resultados.txt guarda hasta dónde se envió, para no repetir ni perder resultados entre turnos.
+RESULTADOS_EN_LOTE = os.getenv("RESULTADOS_EN_LOTE", "1") == "1"
+LOTE_CORTES = [(6, 0), (10, 0), (14, 0), (15, 40)]
+LOTE_MARGEN_MIN = 10
+ARCHIVO_LOTE = "lote_resultados.txt"
 DIV_VENTANA = (5, 40)         # el mínimo/máximo anterior se busca entre 5 y 40 velas atrás
 
 try:
@@ -942,7 +951,9 @@ def mensaje_ranking(tabla):
             f"Las demás horas se miden en silencio."
             + (f"\n🆕 Estrategias nuevas ({', '.join(NUEVAS[x][1] for x in NUEVAS_ACTIVAS)}): "
                f"todo el horario, 7 pares, "
-               f"{' y '.join(str(e * MIN_VELA) for e in NUEVAS_EXP_VELAS)} min." if NUEVAS_ACTIVAS else ""))
+               f"{' y '.join(str(e * MIN_VELA) for e in NUEVAS_EXP_VELAS)} min."
+               + (" Sus resultados llegan juntos a las 6:00, 10:00, 14:00 y 15:40." if RESULTADOS_EN_LOTE
+                  else "") if NUEVAS_ACTIVAS else ""))
 
 
 # ------------------------------------------------------------- BUCLE -------
@@ -1261,7 +1272,7 @@ def vigilar_nuevas(par, df, i, ts, abiertas, vistas, altos, bajos):
         del abiertas[(estr, p, e)]
         if not any(x == estr and y == par and t[0] == vts for (x, y, _), t in abiertas.items()):
             CONTEXTOS.pop((estr, par, vts), None)
-        if avisar:                                  # las no avisadas solo se guardan
+        if avisar and not RESULTADOS_EN_LOTE:       # con lote, llegan juntos cada 4 horas
             emoji, nombre = NUEVAS[estr]
             icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[res]
             enviar_con_grafico(
@@ -1313,6 +1324,104 @@ def vigilar_nuevas(par, df, i, ts, abiertas, vistas, altos, bajos):
             + texto_aprendizaje(clave_de(estr, par, avisar[0] * MIN_VELA), ctx) + "\n"
             "🔍 Estrategia nueva en vigilancia: solo observar, NO operar.",
             df, par=par, lado=lado, ts=ts, precio=precio, estrategia=nombre, nivel=s.get("nivel"))
+
+
+def enviar_largo(texto, limite=3800):
+    """Manda un texto largo en varios mensajes, cortando siempre en un salto de línea."""
+    bloque = ""
+    for linea in texto.split("\n"):
+        if bloque and len(bloque) + len(linea) + 1 > limite:
+            enviar(bloque)
+            bloque = ""
+        bloque = f"{bloque}\n{linea}" if bloque else linea
+    if bloque.strip():
+        enviar(bloque)
+
+
+def cortes_lote(fecha):
+    base = pd.Timestamp(fecha).tz_localize("America/Bogota")
+    return [base + pd.Timedelta(hours=h, minutes=m) for h, m in LOTE_CORTES]
+
+
+def leer_ultimo_lote():
+    try:
+        with open(ARCHIVO_LOTE, encoding="utf-8") as f:
+            return pd.Timestamp(f.read().strip()).tz_convert("America/Bogota")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def mensaje_lote(desde, corte):
+    """Paquete con los resultados (avisados) de las estrategias nuevas que cerraron en (desde, corte]."""
+    if not os.path.exists(ARCHIVO_NUEVAS):
+        return ""
+    v = pd.read_csv(ARCHIVO_NUEVAS)
+    v["entrada_t"] = pd.to_datetime(v["fecha_utc"], utc=True) + pd.Timedelta(minutes=MIN_VELA)
+    v["cierre_t"] = v["entrada_t"] + pd.to_timedelta(v["expiracion_min"], unit="min")
+    v = v[(v["cierre_t"] > desde.tz_convert("UTC")) & (v["cierre_t"] <= corte.tz_convert("UTC"))]
+    if v.empty:
+        return ""
+    llave = ["estrategia", "par", "expiracion_min", "fecha_utc"]
+    if os.path.exists(ARCHIVO_APRENDIZAJE):
+        a = pd.read_csv(ARCHIVO_APRENDIZAJE).drop_duplicates(llave, keep="last")
+        v = v.merge(a.reindex(columns=llave + ["avisada", "que_paso"]), on=llave, how="left")
+        v = v[v["avisada"].astype(str) != "False"]          # solo las señales que sí te llegaron
+    else:
+        v["que_paso"] = np.nan
+    if v.empty:
+        return ""
+    ld, lc = desde.tz_convert("America/Bogota"), corte.tz_convert("America/Bogota")
+    rango = f"{ld:%H:%M} a {lc:%H:%M}" if ld.date() == lc.date() else f"hasta las {lc:%H:%M}"
+    lineas = [f"📦 <b>Resultados de las pruebas</b> · {lc:%d/%m} · {rango} (hora Perú)"]
+    for estr in NUEVAS_ACTIVAS:
+        x = v[v["estrategia"] == estr].sort_values(["entrada_t", "expiracion_min"])
+        if x.empty:
+            continue
+        emoji, nombre = NUEVAS[estr]
+        partes = []
+        for e in sorted(x["expiracion_min"].unique()):
+            xe = x[(x["expiracion_min"] == e) & (x["resultado"] != "EMPATE")]
+            partes.append(f"{e}m {int((xe['resultado'] == 'GANADA').sum())}/{len(xe)}")
+        lineas.append(f"\n{emoji} <b>{nombre}</b> — " + " · ".join(partes))
+        for r in x.to_dict("records"):
+            icono = {"GANADA": "✅", "PERDIDA": "❌", "EMPATE": "➖"}[r["resultado"]]
+            lado = 1 if r["direccion"] == "CALL" else -1
+            pips = (r["cierre"] - r["entrada"]) * lado / pip(r["par"])
+            qp = r.get("que_paso")
+            lineas.append(f"{icono} {r['entrada_t'].tz_convert('America/Bogota'):%H:%M} "
+                          f"{nombre_par(r['par'])} {'⬆️' if lado > 0 else '⬇️'} {r['expiracion_min']}m "
+                          f"{pips:+.1f} pips" + (f" · {qp.lower()}" if isinstance(qp, str) and qp else ""))
+        lineas.append("   Acumulado: " + " · ".join(
+            f"{e * MIN_VELA}m {txt_pct(*real_nueva(estr, e * MIN_VELA))}" for e in NUEVAS_EXP_VELAS))
+    perd = v[(v["resultado"] == "PERDIDA") & v["que_paso"].notna()]
+    if len(perd):
+        qp = perd["que_paso"].value_counts()
+        lineas.append("\n🔎 Qué pasó en las pérdidas: " + ", ".join(
+            f"{q.lower()} ({n})" for q, n in qp.head(3).items()))
+        lineas.append(f"💡 {CONSEJOS.get(qp.index[0], '')}")
+    lineas.append("\n🔍 Pruebas en vigilancia: solo observar, NO operar.")
+    return "\n".join(lineas)
+
+
+def revisar_lote(ahora=None):
+    """Si ya pasó un corte (6:00, 10:00, 14:00 o 15:40 + 10 min) que no se envió, manda el paquete."""
+    if not (RESULTADOS_EN_LOTE and NUEVAS_ACTIVAS):
+        return
+    local = (ahora or pd.Timestamp.now(tz="UTC")).tz_convert("America/Bogota")
+    vencidos = [c for k in range(4) for c in cortes_lote((local - pd.Timedelta(days=k)).date())
+                if c + pd.Timedelta(minutes=LOTE_MARGEN_MIN) <= local]
+    if not vencidos:
+        return
+    corte = max(vencidos)
+    ultimo = leer_ultimo_lote()
+    if ultimo is not None and ultimo >= corte:
+        return
+    desde = ultimo if ultimo is not None else corte - pd.Timedelta(hours=4)
+    texto = mensaje_lote(desde, corte)
+    if texto:
+        enviar_largo(texto)
+    with open(ARCHIVO_LOTE, "w", encoding="utf-8") as f:
+        f.write(corte.isoformat())
 
 
 def resumen_horario():
@@ -1592,6 +1701,12 @@ def main():
             else:
                 log.info("Señal %s %s descartada (acierto %.1f%%)", par, s["modo"],
                          tabla[par][k]["winrate"])
+
+        # Paquete de resultados de las pruebas cada 4 horas (después de revisar todos los pares)
+        try:
+            revisar_lote()
+        except Exception as e:  # noqa: BLE001
+            log.warning("No se pudo enviar el paquete de resultados: %s", e)
 
 
 if __name__ == "__main__":
