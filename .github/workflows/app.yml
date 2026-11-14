@@ -1,0 +1,61 @@
+name: Construir app Android
+
+# Se construye sola cada vez que cambia crear_app.py (o este archivo).
+# La APK queda en Releases: https://github.com/brandyherrera944-art/bot-senales/releases/latest
+on:
+  push:
+    paths:
+      - "crear_app.py"
+      - ".github/workflows/app.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: app-android
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.7"
+      - name: Crear el proyecto Android
+        run: python3 crear_app.py
+      - name: Construir la APK
+        run: |
+          set -o pipefail
+          cd app
+          gradle assembleRelease --no-daemon --stacktrace 2>&1 | tee ../build.log
+          cp movil/build/outputs/apk/release/movil-release.apk ../SenalesBrandy.apk
+      - name: Publicar la APK en Releases
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release view app >/dev/null 2>&1 || gh release create app --title "App Señales Brandy" \
+            --notes "Descarga SenalesBrandy.apk desde tu celular Android e instálala."
+          gh release upload app SenalesBrandy.apk --clobber
+      - name: Guardar el registro de la construcción (rama apk)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p salida
+          if [ -f build.log ]; then tail -c 200000 build.log > salida/build.log; else echo "sin registro" > salida/build.log; fi
+          if [ -f SenalesBrandy.apk ]; then cp SenalesBrandy.apk salida/; fi
+          echo "${{ job.status }} $(date -u)" > salida/estado.txt
+          cd salida
+          git init -q -b apk
+          git add -A
+          git -c user.name=bot-senales -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+            commit -qm "APK $(date -u +%F_%H:%M)"
+          git push -fq "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" apk

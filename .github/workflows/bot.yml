@@ -30,6 +30,7 @@ jobs:
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}     # para el archivo de la app Android
           MIN_WINRATE: "73"
           EXPIRACION_VELAS: "3"
           DURACION_MINUTOS: "330"
