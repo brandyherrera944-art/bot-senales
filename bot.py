@@ -95,6 +95,17 @@ RESULTADOS_EN_LOTE = os.getenv("RESULTADOS_EN_LOTE", "1") == "1"
 LOTE_CORTES = [(6, 0), (10, 0), (14, 0), (15, 40)]
 LOTE_MARGEN_MIN = 10
 ARCHIVO_LOTE = "lote_resultados.txt"
+
+# Enlaces a plataformas que van en cada señal (páginas oficiales, elegidas por Brandy).
+# Quotex usa varios dominios; qxbroker.com es el que reseñas citan para Latinoamérica.
+LINKS_PLATAFORMAS = os.getenv("LINKS_PLATAFORMAS", "1") == "1"
+PLATAFORMAS = [
+    ("Quotex", "https://qxbroker.com"),
+    ("IQ Option", "https://iqoption.com"),
+    ("Pepperstone", "https://pepperstone.com"),
+    ("OANDA", "https://www.oanda.com"),
+    ("XM", "https://www.xm.com"),
+]
 DIV_VENTANA = (5, 40)         # el mínimo/máximo anterior se busca entre 5 y 40 velas atrás
 
 try:
@@ -139,6 +150,20 @@ def _post_telegram(metodo, **kwargs):
     return r
 
 
+def texto_plataformas():
+    """Línea con los enlaces a las plataformas (va al final de cada señal)."""
+    if not LINKS_PLATAFORMAS:
+        return ""
+    return "\n🔗 <b>Plataformas:</b> " + " · ".join(f'<a href="{u}">{n}</a>' for n, u in PLATAFORMAS)
+
+
+def largo_visible(texto: str) -> int:
+    """Largo del texto como lo cuenta Telegram (sin las etiquetas HTML)."""
+    import html
+    import re
+    return len(html.unescape(re.sub(r"<[^>]+>", "", texto)))
+
+
 def enviar(texto: str) -> None:
     if len(texto) > 4000:          # límite de Telegram: se corta en un salto de línea
         texto = texto[:texto.rfind("\n", 0, 3980)] + "\n…"
@@ -148,7 +173,8 @@ def enviar(texto: str) -> None:
     try:
         r = _post_telegram(
             "sendMessage",
-            json={"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML"},
+            json={"chat_id": TELEGRAM_CHAT_ID, "text": texto, "parse_mode": "HTML",
+                  "link_preview_options": {"is_disabled": True}},     # sin vista previa de enlaces
             timeout=15)
         if r.status_code == 404:
             log.warning("Telegram 404: el TELEGRAM_TOKEN no es válido. Revisa el secreto en GitHub.")
@@ -182,7 +208,7 @@ def enviar_foto(png: bytes, texto: str) -> bool:
 def enviar_con_grafico(texto: str, df, **datos) -> None:
     """Manda el mensaje con el gráfico de la operación. Si algo falla, manda solo el texto."""
     png = None
-    if len(texto) <= 1024:                       # límite de Telegram para el texto de una foto
+    if largo_visible(texto) <= 1024:             # límite de Telegram para el texto de una foto
         try:
             png = grafico_vig(df, **datos)
         except Exception as e:  # noqa: BLE001
@@ -932,6 +958,7 @@ def mensaje_senal(par, s, stats, vela_ts):
         f"Acierto histórico de esta estrategia en {par}: "
         f"<b>{stats['winrate']:.1f}%</b> ({stats['ganadas']}/{stats['total']}, últimos ~60 días)\n"
         f"⚠️ Educativo. El % histórico no garantiza el resultado."
+        + texto_plataformas()
     )
 
 
@@ -1123,7 +1150,7 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
         f"{txt_pct(*real_vig_lz())} en total\n"
         f"• ⏰ Real en horario bueno: {txt_pct(*real_horario(ARCHIVO_VIG_LZ))} (todos los pares)\n"
         + texto_aprendizaje("LZ", ctx) + "\n"
-        f"🔍 Vigilancia RSI2 + Lorentzian + kernel: solo observar, NO operar.",
+        f"🔍 Vigilancia RSI2 + Lorentzian + kernel: solo observar, NO operar." + texto_plataformas(),
         df, par=par, lado=lado, ts=ts, precio=precio, estrategia="RSI2 + Lorentzian")
 
 
@@ -1322,7 +1349,7 @@ def vigilar_nuevas(par, df, i, ts, abiertas, vistas, altos, bajos):
             f"📈 Tendencia: {ctx['tendencia']}\n\n"
             f"📊 <b>ASERTIVIDAD REAL</b>\n" + "\n".join(pcts) + "\n"
             + texto_aprendizaje(clave_de(estr, par, avisar[0] * MIN_VELA), ctx) + "\n"
-            "🔍 Estrategia nueva en vigilancia: solo observar, NO operar.",
+            "🔍 Estrategia nueva en vigilancia: solo observar, NO operar." + texto_plataformas(),
             df, par=par, lado=lado, ts=ts, precio=precio, estrategia=nombre, nivel=s.get("nivel"))
 
 
@@ -1666,7 +1693,7 @@ def main():
                         f"💵 Precio: {fmt(par, precio)}\n\n"
                         f"📊 <b>ASERTIVIDAD</b>\n" + "\n".join(pcts) + "\n"
                         + texto_aprendizaje(clave_de("RSI2", par, libres[0] * MIN_VELA), ctx) + "\n"
-                        f"🔍 Modo vigilancia (RSI2): solo observar, NO operar.",
+                        f"🔍 Modo vigilancia (RSI2): solo observar, NO operar." + texto_plataformas(),
                         df, par=par, lado=lado, ts=ts, precio=precio)
 
             # ---- Vigilancia D: RSI2 + Lorentzian + kernel (todos los pares, 15 min)
