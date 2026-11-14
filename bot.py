@@ -150,11 +150,14 @@ def _post_telegram(metodo, **kwargs):
     return r
 
 
-def texto_plataformas():
-    """Línea con los enlaces a las plataformas (va al final de cada señal)."""
+def texto_plataformas(par=None):
+    """Enlaces al final de cada señal: el gráfico del par en TradingView y las plataformas."""
     if not LINKS_PLATAFORMAS:
         return ""
-    return "\n🔗 <b>Plataformas:</b> " + " · ".join(f'<a href="{u}">{n}</a>' for n, u in PLATAFORMAS)
+    grafico = (f'\n📈 <a href="https://es.tradingview.com/chart/?symbol=OANDA:{par}">'
+               f'Ver {nombre_par(par)} en TradingView</a>' if par else "")
+    return grafico + "\n🔗 <b>Plataformas:</b> " + " · ".join(
+        f'<a href="{u}">{n}</a>' for n, u in PLATAFORMAS)
 
 
 def largo_visible(texto: str) -> int:
@@ -958,7 +961,7 @@ def mensaje_senal(par, s, stats, vela_ts):
         f"Acierto histórico de esta estrategia en {par}: "
         f"<b>{stats['winrate']:.1f}%</b> ({stats['ganadas']}/{stats['total']}, últimos ~60 días)\n"
         f"⚠️ Educativo. El % histórico no garantiza el resultado."
-        + texto_plataformas()
+        + texto_plataformas(par)
     )
 
 
@@ -1150,7 +1153,7 @@ def vigilar_lz(par, df, i, ts, abiertas, vistas):
         f"{txt_pct(*real_vig_lz())} en total\n"
         f"• ⏰ Real en horario bueno: {txt_pct(*real_horario(ARCHIVO_VIG_LZ))} (todos los pares)\n"
         + texto_aprendizaje("LZ", ctx) + "\n"
-        f"🔍 Vigilancia RSI2 + Lorentzian + kernel: solo observar, NO operar." + texto_plataformas(),
+        f"🔍 Vigilancia RSI2 + Lorentzian + kernel: solo observar, NO operar." + texto_plataformas(par),
         df, par=par, lado=lado, ts=ts, precio=precio, estrategia="RSI2 + Lorentzian")
 
 
@@ -1349,7 +1352,7 @@ def vigilar_nuevas(par, df, i, ts, abiertas, vistas, altos, bajos):
             f"📈 Tendencia: {ctx['tendencia']}\n\n"
             f"📊 <b>ASERTIVIDAD REAL</b>\n" + "\n".join(pcts) + "\n"
             + texto_aprendizaje(clave_de(estr, par, avisar[0] * MIN_VELA), ctx) + "\n"
-            "🔍 Estrategia nueva en vigilancia: solo observar, NO operar." + texto_plataformas(),
+            "🔍 Estrategia nueva en vigilancia: solo observar, NO operar." + texto_plataformas(par),
             df, par=par, lado=lado, ts=ts, precio=precio, estrategia=nombre, nivel=s.get("nivel"))
 
 
@@ -1693,7 +1696,7 @@ def main():
                         f"💵 Precio: {fmt(par, precio)}\n\n"
                         f"📊 <b>ASERTIVIDAD</b>\n" + "\n".join(pcts) + "\n"
                         + texto_aprendizaje(clave_de("RSI2", par, libres[0] * MIN_VELA), ctx) + "\n"
-                        f"🔍 Modo vigilancia (RSI2): solo observar, NO operar." + texto_plataformas(),
+                        f"🔍 Modo vigilancia (RSI2): solo observar, NO operar." + texto_plataformas(par),
                         df, par=par, lado=lado, ts=ts, precio=precio)
 
             # ---- Vigilancia D: RSI2 + Lorentzian + kernel (todos los pares, 15 min)
