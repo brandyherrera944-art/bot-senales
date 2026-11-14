@@ -45,6 +45,7 @@ jobs:
           if [ -f vigilancia.csv ]; then git add vigilancia.csv; fi
           if [ -f vigilancia_lz.csv ]; then git add vigilancia_lz.csv; fi
           if [ -f aprendizaje.csv ]; then git add aprendizaje.csv; fi
+          if [ -f estrategias_nuevas.csv ]; then git add estrategias_nuevas.csv; fi
           git commit -m "Resultados $(date -u +%F_%H:%M)" || echo "sin cambios"
           git pull --rebase || true
           git push
